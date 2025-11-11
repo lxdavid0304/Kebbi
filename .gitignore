@@ -1,0 +1,8 @@
+﻿__pycache__/
+*.pyc
+.venv/
+env/
+open3d_data/
+*.npy
+*.ply
+*.log
