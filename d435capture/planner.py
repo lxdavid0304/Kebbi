@@ -11,6 +11,9 @@ import numpy as np
 from . import config as cfg
 from .logging_utils import log
 
+_goal_rc = [None]
+_robot_pos_rc = [None]
+
 globals().update({name: getattr(cfg, name) for name in cfg.__all__})
 
 
