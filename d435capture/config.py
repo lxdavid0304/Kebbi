@@ -45,6 +45,7 @@ GROUND_PLANE_RANSAC = {
 # Occupancy update
 OCC_MIN_PTS = 3
 OPEN_CLOSE_KERNEL = 3
+INFLATE_CELLS = 2  # number of grid cells to dilate obstacles before planning
 TEMPORAL_DECAY = 0.90
 
 # Planning defaults
@@ -96,6 +97,7 @@ __all__ = [
     "GROUND_PLANE_RANSAC",
     "OCC_MIN_PTS",
     "OPEN_CLOSE_KERNEL",
+    "INFLATE_CELLS",
     "TEMPORAL_DECAY",
     "MAP_UPDATE_INTERVAL_SEC",
     "DRAW_GRID_ANNOTATION",
