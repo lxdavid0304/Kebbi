@@ -19,6 +19,8 @@ from .logging_utils import (
     _safe_log_exc,
     _safe_log_ok,
     log,
+    log_exc,
+    log_ok,
 )
 
 # Expose config constants locally for legacy helpers that reference globals().
