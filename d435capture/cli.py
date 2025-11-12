@@ -180,7 +180,6 @@ def main():
                     depth_raw,
                     o3d_intrinsic,
                     depth_trunc=cfg.FAR_M_DEFAULT,
-                    ROI=None,
                     voxel_size=0.02,
                     nb_neighbors=20,
                     std_ratio=2.0,
