@@ -44,6 +44,95 @@ from d435capture.sensors import (
 )
 
 
+def overlay_roi_grid(
+    img: np.ndarray,
+    roi: dict,
+    grid_size: int,
+    *,
+    major_step_m: float = 0.5,
+    sensor_rc: Optional[tuple[int, int]] = None,
+    robot_world_xy: Optional[tuple[float, float]] = None,
+) -> None:
+    """Draw light grid lines plus axis labels on the occupancy visualization."""
+    if img is None or img.ndim != 3:
+        return
+    h, w = img.shape[:2]
+    x_min, x_max = float(roi["x_min"]), float(roi["x_max"])
+    y_min, y_max = float(roi["y_min"]), float(roi["y_max"])
+    x_res = (x_max - x_min) / float(grid_size)
+    y_res = (y_max - y_min) / float(grid_size)
+
+    def world_to_col(x: float) -> int:
+        return int(round((x - x_min) / x_res))
+
+    def world_to_row(y: float) -> int:
+        return int(round((y_max - y) / y_res))
+
+    color_minor = (220, 220, 220)
+    color_major = (190, 190, 190)
+
+    if major_step_m <= 0:
+        major_step_m = 0.5
+    start_x = np.ceil(x_min / major_step_m) * major_step_m
+    x = start_x
+    while x <= x_max + 1e-6:
+        col = world_to_col(x)
+        if 0 <= col < w:
+            thickness = 2 if abs((x / 1.0) - round(x / 1.0)) < 1e-6 else 1
+            cv2.line(img, (col, 0), (col, h - 1), color_major if thickness == 2 else color_minor, 1)
+            if thickness == 2:
+                cv2.putText(
+                    img,
+                    f"x={x:.1f}",
+                    (max(0, col - 20), 14),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.35,
+                    (80, 80, 80),
+                    1,
+                    cv2.LINE_AA,
+                )
+        x += major_step_m
+
+    start_y = np.ceil(y_min / major_step_m) * major_step_m
+    y = start_y
+    while y <= y_max + 1e-6:
+        row = world_to_row(y)
+        if 0 <= row < h:
+            thickness = 2 if abs((y / 1.0) - round(y / 1.0)) < 1e-6 else 1
+            cv2.line(img, (0, row), (w - 1, row), color_major if thickness == 2 else color_minor, 1)
+            if thickness == 2:
+                cv2.putText(
+                    img,
+                    f"y={y:.1f}",
+                    (5, min(h - 5, row + 12)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.35,
+                    (80, 80, 80),
+                    1,
+                    cv2.LINE_AA,
+                )
+        y += major_step_m
+
+    if sensor_rc is not None:
+        rr, rc = int(sensor_rc[0]), int(sensor_rc[1])
+        if 0 <= rr < h and 0 <= rc < w:
+            cv2.circle(img, (rc, rr), 4, (0, 215, 255), -1)
+            if robot_world_xy is not None:
+                label = f"robot ({robot_world_xy[0]:.1f},{robot_world_xy[1]:.1f})"
+            else:
+                label = "robot"
+            cv2.putText(
+                img,
+                label,
+                (min(w - 140, rc + 6), min(h - 5, rr + 12)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.4,
+                (0, 0, 0),
+                1,
+                cv2.LINE_AA,
+            )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="RealSense D435 capture & planner")
     parser.add_argument("--tcp-ip", default=cfg.ROBOT_TCP_IP, help="Robot TCP IP")
@@ -199,6 +288,13 @@ def main():
                 last_grid_free = grid_free
                 last_x_res, last_y_res = xy_resolution(cfg.ROI, cfg.GRID_SIZE)
 
+                overlay_roi_grid(
+                    occ_vis,
+                    cfg.ROI,
+                    cfg.GRID_SIZE,
+                    sensor_rc=sensor_rc,
+                    robot_world_xy=cfg.ROBOT_START,
+                )
                 img = occ_vis.copy()
                 if sensor_rc is not None:
                     cv2.circle(img, (int(sensor_rc[1]), int(sensor_rc[0])), 4, (0, 255, 255), -1)
