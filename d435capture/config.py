@@ -30,11 +30,11 @@ PATH_SAMPLE_DS = 0.15
 PLACE6X6_LOG_RATE_SEC = 2.0
 
 # Depth & point cloud filters
-NEAR_M = 0.30
+NEAR_M = 0.10
 FAR_M_DEFAULT = 3.5
 DEPTH_SCALE = 0.001
 USE_ALIGNED_TO_DEPTH = True
-GROUND_Z_RANGE = (0.05, 0.12)
+GROUND_Z_RANGE = (0.05, 1.20)
 GROUND_PLANE_RANSAC = {
     "enabled": True,
     "dist_thresh": 0.02,

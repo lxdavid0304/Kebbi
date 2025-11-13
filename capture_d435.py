@@ -194,8 +194,8 @@ def main():
                     voxel_size=0.02,
                     nb_neighbors=20,
                     std_ratio=2.0,
-                    depth_median_ksize=5,
-                    depth_bilateral_d=5,
+                    depth_median_ksize=3,
+                    depth_bilateral_d=0,
                     undistort=False,
                 )
 
@@ -216,6 +216,7 @@ def main():
                     pcd_local,
                     cfg.ROI,
                     cfg.GRID_SIZE,
+                    z_keep=cfg.GROUND_Z_RANGE,
                     draw_annot=cfg.DRAW_GRID_ANNOTATION,
                     robot_radius_m=cfg.ROBOT_RADIUS_M,
                     min_points_per_cell=1,
