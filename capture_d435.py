@@ -50,10 +50,8 @@ def overlay_roi_grid(
     grid_size: int,
     *,
     major_step_m: float = 0.5,
-    sensor_rc: Optional[tuple[int, int]] = None,
-    robot_world_xy: Optional[tuple[float, float]] = None,
 ) -> None:
-    """Draw light grid lines plus axis labels on the occupancy visualization."""
+    """Draw light grid lines on the occupancy visualization."""
     if img is None or img.ndim != 3:
         return
     h, w = img.shape[:2]
@@ -69,7 +67,7 @@ def overlay_roi_grid(
         return int(round((y_max - y) / y_res))
 
     color_minor = (220, 220, 220)
-    color_major = (190, 190, 190)
+    color_major = (195, 195, 195)
 
     if major_step_m <= 0:
         major_step_m = 0.5
@@ -78,19 +76,8 @@ def overlay_roi_grid(
     while x <= x_max + 1e-6:
         col = world_to_col(x)
         if 0 <= col < w:
-            thickness = 2 if abs((x / 1.0) - round(x / 1.0)) < 1e-6 else 1
-            cv2.line(img, (col, 0), (col, h - 1), color_major if thickness == 2 else color_minor, 1)
-            if thickness == 2:
-                cv2.putText(
-                    img,
-                    f"x={x:.1f}",
-                    (max(0, col - 20), 14),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.35,
-                    (80, 80, 80),
-                    1,
-                    cv2.LINE_AA,
-                )
+            is_major = abs((x / major_step_m) - round(x / major_step_m)) < 1e-6
+            cv2.line(img, (col, 0), (col, h - 1), color_major if is_major else color_minor, 1)
         x += major_step_m
 
     start_y = np.ceil(y_min / major_step_m) * major_step_m
@@ -98,39 +85,9 @@ def overlay_roi_grid(
     while y <= y_max + 1e-6:
         row = world_to_row(y)
         if 0 <= row < h:
-            thickness = 2 if abs((y / 1.0) - round(y / 1.0)) < 1e-6 else 1
-            cv2.line(img, (0, row), (w - 1, row), color_major if thickness == 2 else color_minor, 1)
-            if thickness == 2:
-                cv2.putText(
-                    img,
-                    f"y={y:.1f}",
-                    (5, min(h - 5, row + 12)),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.35,
-                    (80, 80, 80),
-                    1,
-                    cv2.LINE_AA,
-                )
+            is_major = abs((y / major_step_m) - round(y / major_step_m)) < 1e-6
+            cv2.line(img, (0, row), (w - 1, row), color_major if is_major else color_minor, 1)
         y += major_step_m
-
-    if sensor_rc is not None:
-        rr, rc = int(sensor_rc[0]), int(sensor_rc[1])
-        if 0 <= rr < h and 0 <= rc < w:
-            cv2.circle(img, (rc, rr), 4, (0, 215, 255), -1)
-            if robot_world_xy is not None:
-                label = f"robot ({robot_world_xy[0]:.1f},{robot_world_xy[1]:.1f})"
-            else:
-                label = "robot"
-            cv2.putText(
-                img,
-                label,
-                (min(w - 140, rc + 6), min(h - 5, rr + 12)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.4,
-                (0, 0, 0),
-                1,
-                cv2.LINE_AA,
-            )
 
 
 def parse_args() -> argparse.Namespace:
@@ -252,7 +209,7 @@ def main():
                     pitch_deg=args.cam_pitch,
                     h_cam=args.cam_height,
                 )
-                pts_xyh = np.stack([pts_base[:, 0], pts_base[:, 2], pts_base[:, 1]], axis=1)
+                pts_xyh = np.stack([-pts_base[:, 0], pts_base[:, 2], pts_base[:, 1]], axis=1)
                 pcd_local = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(pts_xyh))
 
                 grid_raw, grid_block, occ_vis, extras = pcd_to_occupancy_from_o3d_xy(
@@ -288,13 +245,7 @@ def main():
                 last_grid_free = grid_free
                 last_x_res, last_y_res = xy_resolution(cfg.ROI, cfg.GRID_SIZE)
 
-                overlay_roi_grid(
-                    occ_vis,
-                    cfg.ROI,
-                    cfg.GRID_SIZE,
-                    sensor_rc=sensor_rc,
-                    robot_world_xy=cfg.ROBOT_START,
-                )
+                overlay_roi_grid(occ_vis, cfg.ROI, cfg.GRID_SIZE)
                 img = occ_vis.copy()
                 if sensor_rc is not None:
                     cv2.circle(img, (int(sensor_rc[1]), int(sensor_rc[0])), 4, (0, 255, 255), -1)
