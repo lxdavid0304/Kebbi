@@ -11,7 +11,7 @@ import numpy as np
 import open3d as o3d
 
 from . import config as cfg
-from .logging_utils import _dbg, _safe_log, _safe_log_exc, _safe_log_ok, log
+from .logging_utils import _dbg, _safe_log, _safe_log_exc
 
 # Provide legacy globals compatibility.
 globals().update({name: getattr(cfg, name) for name in cfg.__all__})
@@ -123,7 +123,7 @@ def raytrace_free_from_sensor(grid_block: np.ndarray,
                               targets_rc: np.ndarray,
                               ROI: dict,
                               GRID_SIZE: int,
-                              max_range_m: float = FAR_M_DEFAULT) -> np.ndarray:
+                              max_range_m: float = cfg.FAR_M_DEFAULT) -> np.ndarray:
     """
     從 sensor_rc 向每個 target 射線，沿線未撞到障礙就標為 free=1。
     射程用 max_range_m 限制（以每格公尺數換算最大步數）。
@@ -166,8 +166,8 @@ def integrate_pointcloud_to_grid(pcd_world: o3d.geometry.PointCloud,
                                  ROI: Dict,
                                  GRID_SIZE: int,
                                  *,
-                                 min_pts_per_cell: int = OCC_MIN_PTS,
-                                 inflate_cells: int = INFLATE_CELLS) -> np.ndarray:
+                                 min_pts_per_cell: int = cfg.OCC_MIN_PTS,
+                                 inflate_cells: int = cfg.INFLATE_CELLS) -> np.ndarray:
     """
     世界座標點雲→佔據格（只用 X/Y；忽略高度 Z）。
     備註：若後續要做 raytrace_free，呼叫時建議傳 inflate_cells=0，
@@ -219,8 +219,9 @@ def integrate_pointcloud_to_grid(pcd_world: o3d.geometry.PointCloud,
         grid_block = cv2.dilate(grid_block, K)
 
     # 形態學清理（補洞→去孤點）
-    if OPEN_CLOSE_KERNEL and OPEN_CLOSE_KERNEL >= 3 and (OPEN_CLOSE_KERNEL % 2 == 1):
-        K2 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (OPEN_CLOSE_KERNEL, OPEN_CLOSE_KERNEL))
+    kernel_size = cfg.OPEN_CLOSE_KERNEL
+    if kernel_size and kernel_size >= 3 and (kernel_size % 2 == 1):
+        K2 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
         grid_block = cv2.morphologyEx(grid_block, cv2.MORPH_CLOSE, K2)
         grid_block = cv2.morphologyEx(grid_block, cv2.MORPH_OPEN,  K2)
 
@@ -236,7 +237,7 @@ def overlay_kernel_on_occ(
     alpha: float = 1.0,                          # 1.0=純色覆蓋；<1.0=半透明
     *,
     save: bool = False,                          # 想存就 True
-    save_dir: Optional[os.PathLike] = None,      # 不給就用 SNAP_DIR_DEFAULT
+    save_dir: Optional[os.PathLike] = None,      # 不給就用 cfg.SNAP_DIR_DEFAULT
     filename: Optional[str] = None,              # 指定檔名；不給就用 timestamp/overwrite
     mode: str = "timestamp",                     # "timestamp" 或 "overwrite"
     min_interval_s: float = 0.0                  # 存檔節流；0 代表不節流
@@ -287,7 +288,7 @@ def overlay_kernel_on_occ(
 
     # ---- 需要時才存檔（避免硬碟爆）----
     if save:
-        out_dir = Path(save_dir) if save_dir is not None else SNAP_DIR_DEFAULT
+        out_dir = Path(save_dir) if save_dir is not None else cfg.SNAP_DIR_DEFAULT
         out_dir.mkdir(parents=True, exist_ok=True)
 
         now = time.time()
@@ -425,16 +426,19 @@ def pcd_to_occupancy_from_o3d(
         assert x_max > x_min and y_max > y_min, "ROI 無效"
 
         if robot_radius_m is None:
-            robot_radius_m = float(globals().get("ROBOT_RADIUS_M", 0.20))
+            robot_radius_m = float(cfg.ROBOT_RADIUS_M)
         if inflate_pixels is None:
-            inflate_pixels = int(globals().get(
-                "INFLATE_CELLS",
-                max(1, int(np.ceil(robot_radius_m / max((x_max-x_min)/W, (y_max-y_min)/H))))
-            ))
+            default_inflate = getattr(cfg, "INFLATE_CELLS", None)
+            if default_inflate is None:
+                default_inflate = max(
+                    1,
+                    int(np.ceil(robot_radius_m / max((x_max - x_min) / W, (y_max - y_min) / H))),
+                )
+            inflate_pixels = int(default_inflate)
         if open_close_kernel is None:
-            open_close_kernel = int(globals().get("OPEN_CLOSE_KERNEL", 3))
+            open_close_kernel = int(cfg.OPEN_CLOSE_KERNEL)
         if max_ray_range_m is None:
-            max_ray_range_m = float(globals().get("FAR_M_DEFAULT", 3.5))
+            max_ray_range_m = float(cfg.FAR_M_DEFAULT)
 
         x_res, y_res = _xy_res(ROI, grid_size)
 
@@ -609,13 +613,11 @@ def pcd_to_occupancy_from_o3d_xy(
         "y_min": roi_xy["y_min"],
         "y_max": roi_xy["y_max"],
     }
-    params = dict(kwargs)
-    params["ROI"] = roi_variant
     return pcd_to_occupancy_from_o3d(
         pcd_xy,
         ROI=roi_variant,
         grid_size=grid_size,
-        **params,
+        **kwargs,
     )
 
 
