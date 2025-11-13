@@ -96,10 +96,16 @@ def main():
     odom_client = OdometryClient(args.odom_host, args.odom_port)
     odom_client.start()
     world_map = GlobalWorldMap()
-    local_roi = {"x_min": -1.5, "x_max": 1.5, "y_min": 0.0, "y_max": 3.0}
-    local_cols = int((local_roi["x_max"] - local_roi["x_min"]) / cfg.CELL_M)
-    local_rows = int((local_roi["y_max"] - local_roi["y_min"]) / cfg.CELL_M)
-    local_grid_size = max(1, max(local_cols, local_rows))
+
+    local_roi_front = {"x_min": -1.5, "x_max": 1.5, "y_min": 0.0, "y_max": 3.0}
+    local_roi_bottom = {"x_min": -1.5, "x_max": 1.5, "y_min": -3.0, "y_max": 0.0}
+
+    def _grid_size_for_roi(roi: dict) -> int:
+        cols = int((roi["x_max"] - roi["x_min"]) / cfg.CELL_M)
+        rows = int((roi["y_max"] - roi["y_min"]) / cfg.CELL_M)
+        return max(1, max(cols, rows))
+
+    local_grid_size = _grid_size_for_roi(local_roi_front)
 
     frames = pipeline.wait_for_frames()
     if align is not None:
@@ -198,9 +204,11 @@ def main():
                 pts_xyh = np.stack([pts_base[:, 0], pts_base[:, 2], pts_base[:, 1]], axis=1)
                 pcd_local = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(pts_xyh))
 
+                active_roi = local_roi_front if odom_client.is_connected() else local_roi_bottom
+
                 grid_raw, grid_block, occ_vis, extras = pcd_to_occupancy_from_o3d_xy(
                     pcd_local,
-                    local_roi,
+                    active_roi,
                     local_grid_size,
                     draw_annot=cfg.DRAW_GRID_ANNOTATION,
                     robot_radius_m=cfg.ROBOT_RADIUS_M,
@@ -235,10 +243,10 @@ def main():
                 local_states[grid_free_mask] = FREE
                 pose = odom_client.get_pose()
                 meta = LocalMapMetadata(
-                    roi_x_min=local_roi["x_min"],
-                    roi_x_max=local_roi["x_max"],
-                    roi_y_min=local_roi["y_min"],
-                    roi_y_max=local_roi["y_max"],
+                    roi_x_min=active_roi["x_min"],
+                    roi_x_max=active_roi["x_max"],
+                    roi_y_min=active_roi["y_min"],
+                    roi_y_max=active_roi["y_max"],
                     cell_m=cfg.CELL_M,
                 )
                 world_map.integrate_local(local_states, meta, pose)

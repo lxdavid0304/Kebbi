@@ -3,7 +3,7 @@ from __future__ import annotations
 import socket
 import threading
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional
 
 
 @dataclass
@@ -23,6 +23,8 @@ class OdometryClient:
         self.port = port
         self._pose = RobotPose()
         self._pose_lock = threading.Lock()
+        self._conn_lock = threading.Lock()
+        self._connected = False
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
 
@@ -38,6 +40,8 @@ class OdometryClient:
         if self._thread:
             self._thread.join(timeout=2.0)
             self._thread = None
+        with self._conn_lock:
+            self._connected = False
 
     def get_pose(self) -> RobotPose:
         with self._pose_lock:
@@ -47,6 +51,8 @@ class OdometryClient:
         while not self._stop_event.is_set():
             try:
                 with socket.create_connection((self.host, self.port), timeout=5.0) as sock:
+                    with self._conn_lock:
+                        self._connected = True
                     sock_file = sock.makefile("r")
                     while not self._stop_event.is_set():
                         line = sock_file.readline()
@@ -54,7 +60,13 @@ class OdometryClient:
                             break
                         self._handle_line(line.strip())
             except OSError:
+                with self._conn_lock:
+                    self._connected = False
                 self._stop_event.wait(1.0)
+            finally:
+                if not self._stop_event.is_set():
+                    with self._conn_lock:
+                        self._connected = False
 
     def _handle_line(self, line: str):
         if line.startswith("POSM:"):
@@ -71,3 +83,7 @@ class OdometryClient:
                         self._pose.heading_deg = heading
                 except ValueError:
                     pass
+
+    def is_connected(self) -> bool:
+        with self._conn_lock:
+            return self._connected
