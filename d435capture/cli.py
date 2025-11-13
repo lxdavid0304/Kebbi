@@ -100,8 +100,6 @@ def main():
     local_cols = int((local_roi["x_max"] - local_roi["x_min"]) / cfg.CELL_M)
     local_rows = int((local_roi["y_max"] - local_roi["y_min"]) / cfg.CELL_M)
     local_grid_size = max(1, max(local_cols, local_rows))
-    coverage_threshold = 0.9
-    coverage_notified = False
 
     frames = pipeline.wait_for_frames()
     if align is not None:
@@ -138,8 +136,6 @@ def main():
 
     last_map_ts = 0.0
     last_img = np.full((cfg.GRID_SIZE, cfg.GRID_SIZE, 3), 255, np.uint8)
-    last_grid_block = None
-    last_grid_free = None
     current_path_rc: Optional[List[Tuple[int, int]]] = None
     pending_path_to_execute: Optional[List[Tuple[int, int]]] = None
     pending_execute_ready_at: Optional[float] = None
@@ -185,7 +181,6 @@ def main():
                     std_ratio=2.0,
                     depth_median_ksize=5,
                     depth_bilateral_d=5,
-                    y_keep=None,
                     undistort=False,
                 )
 
@@ -229,17 +224,15 @@ def main():
                         GRID_SIZE=cfg.GRID_SIZE,
                         max_range_m=cfg.FAR_M_DEFAULT,
                     )
-                    grid_free = ((grid_block == 0) & (free_seen > 0)).astype(np.uint8)
+                    grid_free_mask = ((grid_block == 0) & (free_seen > 0))
                 else:
-                    grid_free = (grid_block == 0).astype(np.uint8)
+                    grid_free_mask = (grid_block == 0)
 
-                last_grid_block = grid_block
-                last_grid_free = grid_free
                 last_x_res, last_y_res = xy_resolution(cfg.ROI, cfg.GRID_SIZE)
 
                 local_states = np.full_like(grid_block, UNKNOWN, dtype=np.uint8)
                 local_states[grid_block > 0] = OCCUPIED
-                local_states[grid_block == 0] = FREE
+                local_states[grid_free_mask] = FREE
                 pose = odom_client.get_pose()
                 meta = LocalMapMetadata(
                     roi_x_min=local_roi["x_min"],

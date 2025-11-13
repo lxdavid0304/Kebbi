@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import argparse
 import time
-from typing import Optional, Tuple
+from typing import Optional
 
 import cv2
 import numpy as np
@@ -150,7 +150,6 @@ def main():
                     std_ratio=2.0,
                     depth_median_ksize=5,
                     depth_bilateral_d=5,
-                    y_keep=None,
                     undistort=False,
                 )
 

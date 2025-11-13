@@ -1,20 +1,25 @@
 from __future__ import annotations
 
+import heapq
 import math
-import threading
 import time
-from typing import Dict, List, Optional, Tuple
+from collections import deque
+from typing import Callable, Optional, Tuple
 
 import cv2
 import numpy as np
 
 from . import config as cfg
-from .logging_utils import log
+from .logging_utils import log, _safe_log, _safe_log_exc
+from .occupancy import meters_to_cell_xy
 
 _goal_rc = [None]
 _robot_pos_rc = [None]
 
 globals().update({name: getattr(cfg, name) for name in cfg.__all__})
+
+_DIRS4 = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+_DIRS8 = _DIRS4 + [(-1, -1), (-1, 1), (1, -1), (1, 1)]
 
 
 def _h_octile(a: Tuple[int, int], b: Tuple[int, int], diag_cost: float = 1.41421356237) -> float:
@@ -379,7 +384,7 @@ def wait_reach_cell(tgt_rc: Tuple[int,int], timeout_s: float = 6.0, tol_cells: i
 
 
 def _set_goal_world(x_m: float, y_m: float, ROI: dict, GRID_SIZE: int):
-    rc = _meters_to_cell_xy(x_m, y_m, ROI, GRID_SIZE)
+    rc = meters_to_cell_xy(x_m, y_m, ROI=ROI, GRID_SIZE=GRID_SIZE)
     if rc is None: return None
     H = W = int(GRID_SIZE)
     r, c = rc

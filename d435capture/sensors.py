@@ -1,10 +1,7 @@
 from __future__ import annotations
 
 import math
-import os
 import time
-from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 import cv2
@@ -13,6 +10,7 @@ import open3d as o3d
 import pyrealsense2 as rs
 
 from . import config as cfg
+from .occupancy import meters_to_cell_xy
 from .logging_utils import (
     _dbg,
     _safe_log,
@@ -97,7 +95,7 @@ def report_depth_dtype(depth_np):
             # 粗略猜測單位
             if vmax > 10.0: print("[dtype] 這個上限偏大，可能是毫米或未縮放的單位")
             else:           print("[dtype] 上限在幾公尺內，較像『公尺 m』")
-    except Exception as _:
+    except Exception:
         pass
 
 
