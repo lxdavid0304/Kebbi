@@ -54,7 +54,8 @@ public class RobotMotionController {
     private final Object robotLock = new Object();
     private float posX_m = 0f;
     private float posZ_m = 0f;
-    private float headingDeg = 0f;
+    // 讓開機面朝「前方」對應世界座標 +Y，預設 yaw=90 度（與 Python 端初始朝向一致）
+    private float headingDeg = 90f;
     private float cmdMoveSpeed_mps = 0f;
     private float cmdTurnSpeed_dps = 0f;
 
