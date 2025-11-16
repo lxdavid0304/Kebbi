@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.nuwarobotics.service.sdk"
+    android:versionCode="3"
+    android:versionName="2.1.0.08" >
+
+    <uses-sdk
+        android:minSdkVersion="19"
+        android:targetSdkVersion="21" />
+
+    <uses-permission android:name="android.permission.INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.DELETE_PACKAGES" />
+
+    <application>
+        <meta-data
+            android:name="SDK_VERSION"
+            android:value="NUWA internal SDK" />
+        <meta-data
+            android:name="SDK_KEY"
+            android:value="123" />
+    </application>
+
+</manifest>

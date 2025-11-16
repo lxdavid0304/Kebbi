@@ -11,6 +11,8 @@ import com.kebbi.myapplication12.net.RobotTcpServer;
 import com.kebbi.myapplication12.robot.RobotMotionController;
 
 import java.util.Locale;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -18,6 +20,7 @@ public class MainActivity extends AppCompatActivity {
     private static final int TCP_PORT = 8888;
 
     private final Handler ui = new Handler(Looper.getMainLooper());
+    private final ExecutorService tcpExecutor = Executors.newSingleThreadExecutor();
     private RobotMotionController motionController;
     private RobotTcpServer tcpServer;
 
@@ -68,6 +71,7 @@ public class MainActivity extends AppCompatActivity {
             tcpServer.stop();
             tcpServer = null;
         }
+        tcpExecutor.shutdownNow();
         if (motionController != null) {
             motionController.stop();
             motionController = null;
@@ -173,7 +177,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void sendTcpLine(String line) {
         if (tcpServer != null && line != null) {
-            tcpServer.sendLine(line);
+            tcpExecutor.execute(() -> tcpServer.sendLine(line));
         }
     }
 }

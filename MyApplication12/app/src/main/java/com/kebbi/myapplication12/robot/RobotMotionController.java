@@ -127,169 +127,88 @@ public class RobotMotionController {
         }
     }
 
-    public void runMoveForSeconds(final float speed, final float seconds) {
-        new Thread(() -> {
-            try {
-                moveContinuous(speed);
-                Thread.sleep((long) (Math.abs(seconds) * 1000));
-            } catch (InterruptedException ignored) {
-            } finally {
-                stopMotion();
-            }
-        }, "move-seconds").start();
+    public void runMoveForSeconds(float speedMps, float seconds) {
+        if (seconds <= 0f) return;
+        moveContinuous(speedMps);
+        uiHandler.postDelayed(this::stopMotion, (long) (seconds * 1000));
     }
 
-    public void runTurnForSeconds(final float angularSpeed, final float seconds) {
-        new Thread(() -> {
-            try {
-                turnContinuous(angularSpeed);
-                Thread.sleep((long) (Math.abs(seconds) * 1000));
-            } catch (InterruptedException ignored) {
-            } finally {
-                stopMotion();
-            }
-        }, "turn-seconds").start();
+    public void runTurnForSeconds(float dps, float seconds) {
+        if (seconds <= 0f) return;
+        turnContinuous(dps);
+        uiHandler.postDelayed(this::stopMotion, (long) (seconds * 1000));
     }
 
-    public void runMoveByDistance(final float distanceM) {
-        float seconds = Math.abs(distanceM) / DEFAULT_MOVE_SPEED;
-        float speed = (distanceM >= 0 ? +1f : -1f) * DEFAULT_MOVE_SPEED;
-        runMoveForSeconds(speed, seconds);
+    public void runMoveByDistance(float distanceMeters) {
+        float speed = distanceMeters >= 0 ? DEFAULT_MOVE_SPEED : -DEFAULT_MOVE_SPEED;
+        float time = Math.abs(distanceMeters / DEFAULT_MOVE_SPEED);
+        runMoveForSeconds(speed, time);
     }
 
-    public void runTurnByAngle(final float degrees) {
-        float seconds = Math.abs(degrees) / DEFAULT_TURN_SPEED;
-        float angular = (degrees >= 0 ? +1f : -1f) * DEFAULT_TURN_SPEED;
-        runTurnForSeconds(angular, seconds);
+    public void runTurnByAngle(float degrees) {
+        float speed = degrees >= 0 ? DEFAULT_TURN_SPEED : -DEFAULT_TURN_SPEED;
+        float time = Math.abs(degrees / DEFAULT_TURN_SPEED);
+        runTurnForSeconds(speed, time);
     }
 
-    public void handleCoordinateCommand(String input) {
-        if (!input.contains(",")) {
-            Log.e(TAG, "❌ 指令需含逗號: " + input);
-            return;
-        }
-        try {
-            String[] p = input.split(",");
-            float tx = Float.parseFloat(p[0].trim());
-            float tz = Float.parseFloat(p[1].trim());
-            moveToCoordinate(0f, 0f, 0f, tx, tz);
-        } catch (Exception e) {
-            Log.e(TAG, "⚠ 座標格式錯誤: " + input, e);
-        }
-    }
-
-    private void moveToCoordinate(float curX, float curZ, float curDeg,
-                                  float targetX, float targetZ) {
-        float dx = targetX - curX;
-        float dz = targetZ - curZ;
-
-        float targetAngle = (float) Math.toDegrees(Math.atan2(dx, dz));
-        float turnAngle = wrapAngle(targetAngle - curDeg);
-        float distance = (float) Math.hypot(dx, dz);
-
-        Log.d(TAG, String.format(Locale.US,
-                "🧭 goto (%.2f,%.2f) -> turn %.1f°, move %.2fm",
-                targetX, targetZ, turnAngle, distance));
-
-        new Thread(() -> {
-            runTurnByAngle(turnAngle);
-            try {
-                Thread.sleep((long) (Math.abs(turnAngle / DEFAULT_TURN_SPEED) * 1000));
-            } catch (InterruptedException ignored) {
-            }
-            runMoveByDistance(distance);
-        }, "goto").start();
-    }
-
-    private float wrapAngle(float a) {
-        while (a > 180f) a -= 360f;
-        while (a < -180f) a += 360f;
-        return a;
-    }
-
-    /* ------------ 睡眠/喚醒 ------------ */
     public void enterSleep() {
-        uiHandler.post(() -> {
-            try {
-                synchronized (robotLock) {
-                    if (robotApi != null) {
-                        robotApi.stopListen();
-                        robotApi.hideFace();
-                        robotApi.lockWheel();
-                    }
-                }
-            } catch (Throwable t) {
-                Log.e(TAG, "enterSleep err", t);
-            }
-        });
+        callRobot("enterSleep", new Class[]{}, new Object[]{});
     }
 
     public void exitSleep() {
-        uiHandler.post(() -> {
-            try {
-                synchronized (robotLock) {
-                    if (robotApi != null) {
-                        robotApi.showFace();
-                        robotApi.unlockWheel();
-                    }
-                }
-            } catch (Throwable t) {
-                Log.e(TAG, "exitSleep err", t);
-            }
-        });
+        callRobot("exitSleep", new Class[]{}, new Object[]{});
     }
 
     public void setAlwaysWakeup(boolean on) {
-        synchronized (robotLock) {
-            try {
-                if (robotApi != null) {
-                    robotApi.controlAlwaysWakeup(on);
+        callRobot("setAlwaysWakeup", new Class[]{boolean.class}, new Object[]{on});
+    }
+
+    public void setVoiceTrigger(boolean enable) {
+        callRobot("setVoiceTrigger", new Class[]{boolean.class}, new Object[]{enable});
+    }
+
+    public void handleCoordinateCommand(String cmd) {
+        if (cmd == null || cmd.isEmpty()) return;
+        String lower = cmd.trim().toLowerCase(Locale.US);
+        switch (lower) {
+            case "forward":
+                moveForward();
+                break;
+            case "backward":
+                moveBackward();
+                break;
+            case "left":
+                turnLeft();
+                break;
+            case "right":
+                turnRight();
+                break;
+            case "stop":
+                stopMotion();
+                break;
+            default:
+                if (lower.startsWith("move:")) {
+                    try {
+                        float dist = Float.parseFloat(lower.substring(5));
+                        runMoveByDistance(dist);
+                    } catch (NumberFormatException ignore) {}
+                } else if (lower.startsWith("turn:")) {
+                    try {
+                        float ang = Float.parseFloat(lower.substring(5));
+                        runTurnByAngle(ang);
+                    } catch (NumberFormatException ignore) {}
                 }
-            } catch (Throwable t) {
-                Log.e(TAG, "AlwaysWakeup error", t);
-            }
+                break;
         }
     }
 
-    /* ------------ Nuwa API ------------ */
+    /* ------------ Nuwa Robot API ------------ */
     @Nullable
     private NuwaRobotAPI initNuwaApiCompat() {
         try {
-            // 1) (Context, String)
-            try {
-                java.lang.reflect.Constructor<NuwaRobotAPI> c =
-                        NuwaRobotAPI.class.getConstructor(android.content.Context.class, String.class);
-                return c.newInstance(appContext, appContext.getPackageName());
-            } catch (Throwable ignore) {}
-
-            // 2) (Context)
-            try {
-                java.lang.reflect.Constructor<NuwaRobotAPI> c =
-                        NuwaRobotAPI.class.getConstructor(android.content.Context.class);
-                return c.newInstance(appContext);
-            } catch (Throwable ignore) {}
-
-            // 3) getInstance(Context)
-            try {
-                java.lang.reflect.Method m =
-                        NuwaRobotAPI.class.getMethod("getInstance", android.content.Context.class);
-                Object api = m.invoke(null, appContext);
-                return (NuwaRobotAPI) api;
-            } catch (Throwable ignore) {}
-
-            // 4) createInstance(Context, String)
-            try {
-                java.lang.reflect.Method m =
-                        NuwaRobotAPI.class.getMethod("createInstance",
-                                android.content.Context.class, String.class);
-                Object api = m.invoke(null, appContext, appContext.getPackageName());
-                return (NuwaRobotAPI) api;
-            } catch (Throwable ignore) {}
-
-            Log.e(TAG, "無法建立 NuwaRobotAPI 實例");
-            return null;
+            return new NuwaRobotAPI(appContext, null);
         } catch (Throwable t) {
-            Log.e(TAG, "initNuwaApiCompat exception", t);
+            Log.e(TAG, "initNuwaApiCompat error", t);
             return null;
         }
     }
@@ -311,9 +230,6 @@ public class RobotMotionController {
 
     private void registerVoiceListenerSafe() {
         callRobot("registerVoiceEventListener",
-                new Class[]{VoiceEventListener.class},
-                new Object[]{voiceListener});
-        callRobot("addVoiceEventListener",
                 new Class[]{VoiceEventListener.class},
                 new Object[]{voiceListener});
     }
@@ -362,6 +278,27 @@ public class RobotMotionController {
         @Override public void onCompleteOfMotionPlay(String s) {}
         @Override public void onPlayBackOfMotionPlay(String s) {}
         @Override public void onErrorOfMotionPlay(int i) {}
+        @Override public void onPrepareMotion(boolean ready, String motion, float progress) {}
+        @Override public void onCameraOfMotionPlay(String motion) {}
+        @Override public void onGetCameraPose(float f1, float f2, float f3,
+                                              float f4, float f5, float f6, float f7,
+                                              float f8, float f9, float f10,
+                                              float f11, float f12) {}
+        @Override public void onTouchEvent(int part, int type) {}
+        @Override public void onPIREvent(int value) {}
+        @Override public void onTap(int key) {}
+        @Override public void onLongPress(int key) {}
+        @Override public void onWindowSurfaceReady() {}
+        @Override public void onWindowSurfaceDestroy() {}
+        @Override public void onTouchEyes(int eye, int type) {}
+        @Override public void onRawTouch(int x, int y, int type) {}
+        @Override public void onFaceSpeaker(float angle) {}
+        @Override public void onActionEvent(int action, int state) {
+            Log.d(TAG, "Action event: action=" + action + ", state=" + state);
+        }
+        @Override public void onDropSensorEvent(int sensorId) {
+            Log.d(TAG, "Drop sensor event: " + sensorId);
+        }
     };
 
     private final VoiceEventListener voiceListener = new VoiceEventListener() {
