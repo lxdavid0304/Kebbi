@@ -67,7 +67,7 @@ class RobotTCPClient:
                         raise ConnectionError("peer closed")
 
                     self._buffer += data
-                    # 防止無限累積
+                    # 防止緩衝暴增
                     if len(self._buffer) > 1_000_000:
                         self._buffer = self._buffer[-8192:]
 
@@ -80,7 +80,7 @@ class RobotTCPClient:
                             continue
                         if msg.startswith("POS:"):
                             payload = msg[4:].strip()
-                            # 支援兩種：POS:r,c 或 POS:x,y[,yaw]
+                            # 兩種格式：POS:r,c 或 POS:x,y[,yaw]
                             try:
                                 toks = [t.strip() for t in payload.split(",")]
                                 if len(toks) >= 3:  # x,y,yaw
@@ -89,7 +89,6 @@ class RobotTCPClient:
                                     if self._on_pos: self._on_pos(("xy", (x, y, yaw)))
                                 elif len(toks) == 2:
                                     a = float(toks[0]); b = float(toks[1])
-                                    # 推測整數=格座標；浮點=世界座標
                                     if toks[0].isdigit() and toks[1].isdigit():
                                         if self._on_pos: self._on_pos(("rc", (int(a), int(b))))
                                     else:
@@ -104,31 +103,38 @@ class RobotTCPClient:
                         if msg == "EXPLORE_DONE":
                             if self._on_event: self._on_event(msg)
                             continue
-                        # 其他文字就打印
+                        # 其他訊息交給外部回呼（例如 HUMAN_DIST）
+                        if self._on_event:
+                            try:
+                                self._on_event(msg)
+                                continue
+                            except Exception:
+                                pass
                         print("[tcp] <", msg)
 
-                    # 心跳超時（例如 10 秒沒收到 PONG）
+                    # 心跳超時（例如 10 秒沒有 PONG）
                     if time.time() - self._last_pong_ts > 12.0:
                         raise TimeoutError("heartbeat lost")
                 except Exception as e:
                     print(f"[tcp] rx error: {e}")
                     self._connected.clear()
                     try:
-                        if self.sock: self.sock.close()
-                    except: pass
+                        if self.sock:
+                            self.sock.close()
+                    except Exception:
+                        pass
                     self.sock = None
                     time.sleep(retry_sec)
 
         self.rx_thread = threading.Thread(target=_rx_loop, daemon=True)
         self.rx_thread.start()
-
-        # 啟動心跳送出執行緒
         self._start_heartbeat()
 
-    # -------- 心跳送出 --------
+    # -------- 心跳發送 --------
     def _start_heartbeat(self, interval=2.0):
         if self._hb_thread and self._hb_thread.is_alive():
             return
+
         def _hb():
             while self.running:
                 try:
@@ -136,9 +142,9 @@ class RobotTCPClient:
                         with self.tx_lock:
                             self.sock.sendall(b"PING\n")
                     time.sleep(interval)
-                except Exception as e:
-                    # 讓 rx 線程負責重連
+                except Exception:
                     time.sleep(interval)
+
         self._hb_thread = threading.Thread(target=_hb, daemon=True)
         self._hb_thread.start()
 
@@ -153,11 +159,13 @@ class RobotTCPClient:
                 raise ConnectionError("tcp not connected")
             try:
                 self.sock.sendall(data)
-            except Exception as e:
+            except Exception:
                 self._connected.clear()
                 try:
-                    if self.sock: self.sock.close()
-                except: pass
+                    if self.sock:
+                        self.sock.close()
+                except Exception:
+                    pass
                 self.sock = None
                 raise
 
@@ -165,21 +173,22 @@ class RobotTCPClient:
     def close(self):
         self.running = False
         try:
-            if self.sock: self.sock.close()
-        except: pass
+            if self.sock:
+                self.sock.close()
+        except Exception:
+            pass
         self.sock = None
         self._connected.clear()
 
 
 def execute_path_over_tcp(path_rc, tcp, *, start_heading_deg: float = 0.0, allow_diagonal: bool = True) -> bool:
     """
-    start_heading_deg：請給「網格角度」；若妳的全域使用世界角度(0=+X,90=+Y)，請先轉成網格角度。
-    例：start_heading_deg = world_yaw_deg_to_grid_heading(ROBOT_INIT_YAW_DEG)
+    start_heading_deg：給「網格方位」用（若要從世界 yaw 轉，可用 world_yaw_deg_to_grid_heading）。
     """
     if len(path_rc) < 2:
         return True
 
-    # 1) 產生指令序列（含對角距離 √2）
+    # 1) 產生指令序列（含轉向與移動距離）
     cmds = path_to_commands(
         path_rc,
         cell_m=float(cfg.CELL_M),
@@ -188,7 +197,7 @@ def execute_path_over_tcp(path_rc, tcp, *, start_heading_deg: float = 0.0, allow
     )
     print(f"[nav] cmds={cmds}")
 
-    # 2) 依段落執行；每段末等待抵達該段終點格
+    # 2) 依段落執行，每段移動完等待抵達
     seg_end_indices = []
     acc = 0
     for _, cnt, _ in _segment_path(path_rc, allow_diagonal=allow_diagonal):
@@ -197,17 +206,17 @@ def execute_path_over_tcp(path_rc, tcp, *, start_heading_deg: float = 0.0, allow
 
     cmd_idx = 0
     for seg_end in seg_end_indices:
-        # a) TURN（如有）
+        # a) TURN（若存在）
         if cmd_idx < len(cmds) and cmds[cmd_idx].startswith("turn:"):
             tcp.send_line(cmds[cmd_idx])
             cmd_idx += 1
-            time.sleep(0.2)  # 若 Android 有 ACK:TURN_DONE 可改成等待 ACK
+            time.sleep(0.2)  # Android 端可能回 ACK
 
         # b) MOVE
         if cmd_idx < len(cmds) and cmds[cmd_idx].startswith("move:"):
             tcp.send_line(cmds[cmd_idx])
             cmd_idx += 1
-            tgt_rc = path_rc[min(seg_end, len(path_rc)-1)]
+            tgt_rc = path_rc[min(seg_end, len(path_rc) - 1)]
             ok = wait_reach_cell(tgt_rc, timeout_s=8.0, tol_cells=0)
             if not ok:
                 try:

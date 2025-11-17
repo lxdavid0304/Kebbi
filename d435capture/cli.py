@@ -50,7 +50,29 @@ except Exception:  # pragma: no cover - ToF module optional at runtime
     _get_latest_person_range = None
 
 
+class _SimplePersonRange:
+    def __init__(self, distance_m: float):
+        self.distance_m = float(distance_m)
+        self.ts = time.time()
+
+
+_manual_person_range: Optional[_SimplePersonRange] = None
+
+
+def _update_manual_person_range(distance_m: float):
+    global _manual_person_range
+    try:
+        _manual_person_range = _SimplePersonRange(float(distance_m))
+    except Exception:
+        _manual_person_range = None
+
+
 def _fetch_person_range(max_age: float = 1.0):
+    # 1) 後向距離（TCP 發來）優先
+    if _manual_person_range is not None:
+        if max_age <= 0 or (time.time() - _manual_person_range.ts) <= max_age:
+            return _manual_person_range
+    # 2) 若有 maixsense ToF 模組就用
     if _get_latest_person_range is None:
         return None
     try:
@@ -85,6 +107,18 @@ def handle_robot_pos(payload) -> None:
             set_robot_pos_rc(rc)
 
 
+def handle_tcp_event(msg: str) -> None:
+    """Handle extra TCP messages (e.g., HUMAN_DIST:<meters>)."""
+    if not msg:
+        return
+    if msg.startswith("HUMAN_DIST:"):
+        try:
+            dist = float(msg.split(":", 1)[1].strip())
+            _update_manual_person_range(dist)
+        except Exception:
+            pass
+
+
 def main():
     args = parse_args()
     debug_env()
@@ -97,8 +131,10 @@ def main():
     odom_client.start()
     world_map = GlobalWorldMap()
 
-    local_roi_front = {"x_min": -1.5, "x_max": 1.5, "y_min": 0.0, "y_max": 3.0}
-    local_roi_bottom = {"x_min": -1.5, "x_max": 1.5, "y_min": -3.0, "y_max": 0.0}
+    # Robot-centric ROI: left/right +/-1.5 m, front 2.5 m, back 0.5 m (includes robot origin)
+    local_roi_front = {"x_min": -1.5, "x_max": 1.5, "y_min": -0.5, "y_max": 2.5}
+    # No odom: use the same ROI so the robot origin is still inside
+    local_roi_bottom = {"x_min": -1.5, "x_max": 1.5, "y_min": -0.5, "y_max": 2.5}
 
     def _grid_size_for_roi(roi: dict) -> int:
         cols = int((roi["x_max"] - roi["x_min"]) / cfg.CELL_M)
@@ -134,6 +170,7 @@ def main():
                 args.tcp_ip,
                 args.tcp_port,
                 on_pos=handle_robot_pos,
+                on_event=handle_tcp_event,
             )
             tcp.connect()
         except Exception as exc:
@@ -252,6 +289,12 @@ def main():
                 world_map.integrate_local(local_states, meta, pose)
 
                 img = occ_vis.copy()
+                # 每 0.5 m 畫一條網格線（CELL_M=0.05 => 每 10 格），方便判讀局部位置
+                local_major = max(1, int(0.5 / cfg.CELL_M))
+                for c in range(0, img.shape[1], local_major):
+                    cv2.line(img, (c, 0), (c, img.shape[0] - 1), (180, 180, 180), 1)
+                for r in range(0, img.shape[0], local_major):
+                    cv2.line(img, (0, r), (img.shape[1] - 1, r), (180, 180, 180), 1)
                 if current_path_rc:
                     for r, c in current_path_rc:
                         cv2.circle(img, (int(c), int(r)), 1, (0, 165, 255), -1)
@@ -296,6 +339,12 @@ def main():
                         color=(0, 255, 255),
                         alpha=0.6,
                     )
+                # 0.5 m grid (CELL_M=0.05 -> every 10 cells), easier to read local position
+                local_major = max(1, int(0.5 / cfg.CELL_M))
+                for c in range(0, img.shape[1], local_major):
+                    cv2.line(img, (c, 0), (c, img.shape[0] - 1), (180, 180, 180), 1)
+                for r in range(0, img.shape[0], local_major):
+                    cv2.line(img, (0, r), (img.shape[1] - 1, r), (180, 180, 180), 1)
                 last_img = img
 
                 world_display = np.zeros((world_map.grid_size, world_map.grid_size, 3), dtype=np.uint8)
@@ -305,6 +354,8 @@ def main():
                 if current_path_rc:
                     for r, c in current_path_rc:
                         cv2.circle(world_display, (int(c), int(r)), 1, (0, 165, 255), -1)
+                if sensor_rc is not None:
+                    cv2.circle(world_display, (int(sensor_rc[1]), int(sensor_rc[0])), 2, (0, 255, 255), -1)
                 if (
                     cfg.BACKWARD_FAN_ALWAYS_RENDER
                     and sensor_rc is not None
@@ -340,7 +391,7 @@ def main():
                         color=(0, 255, 255),
                         alpha=0.55,
                     )
-                    label = f"盲人距離 {person_range.distance_m:.2f} m"
+                    label = f"BACK dist {person_range.distance_m:.2f} m"
                     cv2.putText(
                         world_display,
                         label,
@@ -351,7 +402,19 @@ def main():
                         1,
                         cv2.LINE_AA,
                     )
-                cv2.imshow("World Map", world_display)
+                # 0.5 m grid + enlarged world display
+                major_step = max(1, int(0.5 / cfg.CELL_M))
+                for c in range(0, world_map.grid_size, major_step):
+                    cv2.line(world_display, (c, 0), (c, world_map.grid_size - 1), (80, 80, 80), 1)
+                for r in range(0, world_map.grid_size, major_step):
+                    cv2.line(world_display, (0, r), (world_map.grid_size - 1, r), (80, 80, 80), 1)
+                scale = 8  # enlarge 8x for readability
+                world_display_large = cv2.resize(
+                    world_display,
+                    (world_map.grid_size * scale, world_map.grid_size * scale),
+                    interpolation=cv2.INTER_NEAREST,
+                )
+                cv2.imshow("World Map", world_display_large)
 
             cv2.imshow(window, last_img)
 
