@@ -31,12 +31,12 @@ def _desktop_path() -> Path:
 
 def flip_pcd(pcd: o3d.geometry.PointCloud) -> o3d.geometry.PointCloud:
     """老師的翻正：Y/Z 取反，避免上下顛倒。"""
-    pcd = pcd.clone()
-    pcd.transform([[1, 0, 0, 0],
-                   [0, -1, 0, 0],
-                   [0, 0, -1, 0],
-                   [0, 0, 0, 1]])
-    return pcd
+    pcd_copy = o3d.geometry.PointCloud(pcd)
+    pcd_copy.transform([[1, 0, 0, 0],
+                        [0, -1, 0, 0],
+                        [0, 0, -1, 0],
+                        [0, 0, 0, 1]])
+    return pcd_copy
 
 
 def main():
