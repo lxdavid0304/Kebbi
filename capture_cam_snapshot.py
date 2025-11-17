@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-按 Enter 抓拍一張 D435 影像，並以老師的相機座標轉點雲方法存成 PLY。
-會同時輸出原始彩色圖 (PNG) 與相機座標點雲 (PLY) 到桌面（若桌面不存在則用當前目錄）。
+老師版架構：開啟 D435 即時顯示「翻正」的彩色點雲，按 q 儲存彩色/深度影像。
+不做額外濾波或截斷，保留原始資料。
 """
 
 from __future__ import annotations
@@ -12,107 +12,66 @@ from pathlib import Path
 import cv2
 import numpy as np
 import open3d as o3d
-import pyrealsense2 as rs
+from realsense_depth import DepthCamera
+from utils import createPointCloudO3D
 
-from d435capture.sensors import auto_start_realsense
-
-
-# === 老師提供的相機座標點雲工具（保持原架構） ===
-def depth2PointCloud(depth, rgb, depth_scale, clip_distance_max):
-    """把深度影像轉成相機座標點雲，並附上 RGB。"""
-    intrinsics = depth.profile.as_video_stream_profile().intrinsics
-    depth = np.asanyarray(depth.get_data()) * depth_scale  # 1000 mm => 0.001 m
-    rgb = np.asanyarray(rgb.get_data())
-    rows, cols = depth.shape
-
-    c, r = np.meshgrid(np.arange(cols), np.arange(rows), sparse=True)
-    r = r.astype(float)
-    c = c.astype(float)
-    valid = (depth > 0) & (depth < clip_distance_max)  # 僅保留有效距離
-    valid = np.ravel(valid)
-
-    z = depth
-    x = z * (c - intrinsics.ppx) / intrinsics.fx
-    y = z * (r - intrinsics.ppy) / intrinsics.fy
-
-    z = np.ravel(z)[valid]
-    x = np.ravel(x)[valid]
-    y = np.ravel(y)[valid]
-
-    r_ch = np.ravel(rgb[:, :, 0])[valid]
-    g_ch = np.ravel(rgb[:, :, 1])[valid]
-    b_ch = np.ravel(rgb[:, :, 2])[valid]
-
-    pointsxyzrgb = np.dstack((x, y, z, b_ch, g_ch, r_ch))
-    pointsxyzrgb = pointsxyzrgb.reshape(-1, 6)
-    return pointsxyzrgb
-
-
-def get_intrinsic_matrix(frame, imwidth, imheight):
-    intrinsics = frame.profile.as_video_stream_profile().intrinsics
-    out = o3d.camera.PinholeCameraIntrinsic(
-        imwidth, imheight, intrinsics.fx, intrinsics.fy, intrinsics.ppx, intrinsics.ppy
-    )
-    return out
-
-
-def create_point_cloud_file2(vertices, filename):
-    ply_header = """ply
-	format ascii 1.0
-	element vertex %(vert_num)d
-	property float x
-	property float y
-	property float z
-	property uchar red
-	property uchar green
-	property uchar blue
-	end_header
-	"""
-    with open(filename, "w") as f:
-        f.write(ply_header % dict(vert_num=len(vertices)))
-        np.savetxt(f, vertices, "%f %f %f %d %d %d")
+# 解析度沿用老師設定
+resolution_width, resolution_height = (640, 480)
 
 
 def _desktop_path() -> Path:
-    home = Path.home()
-    desktop = home / "Desktop"
+    desktop = Path.home() / "Desktop"
     return desktop if desktop.exists() else Path.cwd()
 
 
 def main():
-    pipeline, profile, align, depth_scale = auto_start_realsense()
-    print("Stream started. 按 Enter 抓拍一張影像並存成相機座標點雲...")
-    input()
+    cam = DepthCamera(resolution_width, resolution_height)
 
-    # 抓一幀
-    frames = pipeline.wait_for_frames()
-    if align is not None:
-        frames = align.process(frames)
-    color_frame = frames.get_color_frame()
-    depth_frame = frames.get_depth_frame()
-    if not color_frame or not depth_frame:
-        raise RuntimeError("無法取得 color/depth frame")
+    # 建立可互動的點雲視窗
+    vis = o3d.visualization.Visualizer()
+    vis.create_window(window_name="PointCloud (flipped)", width=800, height=600)
+    live_pcd = o3d.geometry.PointCloud()
+    vis.add_geometry(live_pcd)
 
-    color_np = np.asanyarray(color_frame.get_data())
-
-    # 相機座標點雲（老師版本）
-    clip_distance_max = 3.5
-    vertices = depth2PointCloud(depth_frame, color_frame, depth_scale, clip_distance_max)
-
-    # 輸出路徑
     out_dir = _desktop_path()
-    ts = time.strftime("%Y%m%d_%H%M%S")
-    img_path = out_dir / f"cam_snapshot_{ts}.png"
-    pcd_path = out_dir / f"cam_coords_{ts}.ply"
 
-    # 存影像 + 點雲
-    cv2.imwrite(str(img_path), cv2.cvtColor(color_np, cv2.COLOR_RGB2BGR))
-    create_point_cloud_file2(vertices, str(pcd_path))
+    try:
+        while True:
+            ret, depth_raw_frame, color_raw_frame = cam.get_raw_frame()
+            if not ret:
+                print("Unable to get a frame")
+                continue
 
-    print(f"Saved color image -> {img_path}")
-    print(f"Saved camera-coordinate PLY -> {pcd_path}")
+            # 彩色/深度原始影像（未處理）
+            color_np = np.asanyarray(color_raw_frame.get_data())
+            depth_np = np.asanyarray(depth_raw_frame.get_data())
 
-    pipeline.stop()
+            # 用老師的 createPointCloudO3D（含翻正 Y/Z）產生彩色點雲並顯示
+            pcd = createPointCloudO3D(color_raw_frame, depth_raw_frame)
+            live_pcd.points = pcd.points
+            live_pcd.colors = pcd.colors
+            vis.update_geometry(live_pcd)
+            vis.poll_events()
+            vis.update_renderer()
+
+            # 顯示彩色影像
+            cv2.imshow("Color", color_np)
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord("q"):
+                ts = time.strftime("%Y%m%d_%H%M%S")
+                img_path = out_dir / f"frame_color_{ts}.png"
+                depth_path = out_dir / f"frame_depth_{ts}.png"
+
+                cv2.imwrite(str(img_path), color_np)
+                # 深度直接存 16-bit PNG，保留原始深度值
+                cv2.imwrite(str(depth_path), depth_np)
+
+                print(f"Saved color -> {img_path}")
+                print(f"Saved depth -> {depth_path}")
+                break
+    finally:
+        vis.destroy_window()
+        cam.release()
 
 
 if __name__ == "__main__":
