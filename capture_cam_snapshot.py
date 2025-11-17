@@ -24,7 +24,7 @@ import pyrealsense2 as rs
 
 # ---------------------- RealSense 封裝 ----------------------
 class DepthCamera:
-    def __init__(self, w: int = 640, h: int = 480, fps: int = 30, align_to=rs.stream.color):
+    def __init__(self, w: int = 640, h: int = 480, fps: int = 30, align_to=rs.stream.color, warmup_frames: int = 30, laser_on: bool = True):
         self.pipeline = rs.pipeline()
         config = rs.config()
         wrapper = rs.pipeline_wrapper(self.pipeline)
@@ -32,10 +32,27 @@ class DepthCamera:
         device = profile.get_device()
         depth_sensor = device.first_depth_sensor()
         self.depth_scale = depth_sensor.get_depth_scale()
-        self.align = rs.align(align_to)
         config.enable_stream(rs.stream.depth, w, h, rs.format.z16, fps)
         config.enable_stream(rs.stream.color, w, h, rs.format.bgr8, fps)
         self.pipeline.start(config)
+
+        # 開啟投射器（若支援），可依需要調整雷射功率
+        try:
+            if depth_sensor.supports(rs.option.emitter_enabled):
+                depth_sensor.set_option(rs.option.emitter_enabled, 1 if laser_on else 0)
+            if depth_sensor.supports(rs.option.laser_power):
+                rng = depth_sensor.get_option_range(rs.option.laser_power)
+                depth_sensor.set_option(rs.option.laser_power, rng.max if laser_on else rng.min)
+        except Exception:
+            pass
+
+        # 對齊到指定串流
+        self.align = rs.align(align_to)
+
+        # 暖機：先丟掉幾幀，確保有深度
+        for _ in range(int(warmup_frames)):
+            frames = self.pipeline.wait_for_frames()
+            _ = self.align.process(frames)
 
     def get_raw_frame(self):
         frames = self.pipeline.wait_for_frames()
