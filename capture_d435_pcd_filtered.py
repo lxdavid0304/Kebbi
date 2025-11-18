@@ -61,12 +61,12 @@ def main():
 
     intrinsic = build_o3d_intrinsic_from_frame(color_frame)
 
-    # 原始相機座標點雲（不降採樣、不濾波）
+    # 原始相機座標點雲（不降採樣、不濾波），截斷 3.5 m
     pcd_raw = frames_to_pointcloud_o3d(
         color_np,
         depth_np,
         intrinsic,
-        depth_trunc=5.0,   # 視需求調整截斷
+        depth_trunc=3.5,   # 視需求調整截斷（現改為 3.5 m）
         voxel_size=0.0,    # 0 代表不做 voxel downsample
         nb_neighbors=0,    # 0 代表不做統計濾波
     )
@@ -107,13 +107,16 @@ def main():
     print(f"Saved flip raw PLY -> {flip_raw_ply}")
     print(f"Saved flip filtered PLY -> {flip_filt_ply}")
 
-    # 顯示：原始與濾波後翻正點雲
-    if pcd_flip_filtered.has_points():
-        o3d.visualization.draw_geometries([pcd_flip_filtered], window_name="Flipped Filtered PCD")
-    elif pcd_flip_raw.has_points():
+    # 顯示：原始與濾波後翻正點雲（兩個視窗依序顯示）
+    if pcd_flip_raw.has_points():
         o3d.visualization.draw_geometries([pcd_flip_raw], window_name="Flipped Raw PCD")
     else:
-        print("點雲為空，沒有可視化內容。")
+        print("原始點雲為空，無法顯示 Raw 視窗。")
+
+    if pcd_flip_filtered.has_points():
+        o3d.visualization.draw_geometries([pcd_flip_filtered], window_name="Flipped Filtered PCD")
+    else:
+        print("濾波點雲為空，無法顯示 Filtered 視窗。")
 
     cv2.imshow("Color", color_np)
     cv2.waitKey(0)
