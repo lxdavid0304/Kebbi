@@ -35,9 +35,9 @@ from d435capture.sensors import (
 )
 
 
-# ROI around robot (meters)
-ROI_X = (-1.5, 1.5)
-ROI_Y = (-0.5, 2.5)
+# ROI around robot (meters) - widened for debugging
+ROI_X = (-5.0, 5.0)
+ROI_Y = (-5.0, 5.0)
 CELL_M = 0.05  # 5 cm resolution
 GRID_W = int(round((ROI_X[1] - ROI_X[0]) / CELL_M))  # 60
 GRID_H = int(round((ROI_Y[1] - ROI_Y[0]) / CELL_M))  # 60
@@ -46,7 +46,10 @@ VOXEL_SIZE = 0.01  # light downsample (1 cm)
 NB_NEIGHBORS = 30
 STD_RATIO = 2.5
 DEPTH_TRUNC = 3.5
-Z_RANGE = cfg.GROUND_Z_RANGE  # limit obstacles to a sane height band
+Z_RANGE = (0.0, 3.0)  # relaxed height band to avoid dropping points
+
+# Yaw correction if camera faces +Y (add 90 deg); keep 0 if already aligned
+CAM_YAW_DEG = 0.0
 
 
 def _desktop() -> Path:
@@ -162,6 +165,7 @@ def main():
         voxel_size=0.0,
         nb_neighbors=0,
     )
+    print("pcd_cam pts:", len(pcd_cam.points))
 
     # Light filter
     if pcd_cam.has_points():
@@ -173,19 +177,22 @@ def main():
             )
     else:
         pcd_filt = o3d.geometry.PointCloud()
+    print("pcd_filt pts:", len(pcd_filt.points))
 
     # Camera -> robot base transform (using same math as capture_d435 defaults)
     T_local_cam = make_T_local_cam(
         cam_tx=0.0,
         cam_ty=0.0,
         cam_z=0.063,            # same as --cam-height default
-        cam_yaw_rad=0.0,
+        cam_yaw_rad=np.deg2rad(CAM_YAW_DEG),
         pitch_deg=40.0,         # same as --cam-pitch default
     )
     pcd_base = transform_pcd(pcd_filt, T_local_cam)
+    print("pcd_base pts:", len(pcd_base.points))
 
     # Crop ROI
     pcd_roi = _pcd_crop_roi_xy(pcd_base)
+    print("pcd_roi pts:", len(pcd_roi.points))
 
     # Occupancy
     occ = _pcd_to_occ(pcd_roi)
