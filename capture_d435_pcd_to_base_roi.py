@@ -35,18 +35,18 @@ from d435capture.sensors import (
 )
 
 
-# ROI around robot (meters) - widened for debugging
-ROI_X = (-5.0, 5.0)
-ROI_Y = (-5.0, 5.0)
+# ROI around robot (meters) - further widened for debugging
+ROI_X = (-6.0, 6.0)
+ROI_Y = (-6.0, 6.0)
 CELL_M = 0.05  # 5 cm resolution
-GRID_W = int(round((ROI_X[1] - ROI_X[0]) / CELL_M))  # 60
-GRID_H = int(round((ROI_Y[1] - ROI_Y[0]) / CELL_M))  # 60
+GRID_W = int(round((ROI_X[1] - ROI_X[0]) / CELL_M))
+GRID_H = int(round((ROI_Y[1] - ROI_Y[0]) / CELL_M))
 
 VOXEL_SIZE = 0.01  # light downsample (1 cm)
 NB_NEIGHBORS = 30
 STD_RATIO = 2.5
 DEPTH_TRUNC = 3.5
-Z_RANGE = (0.0, 3.0)  # relaxed height band to avoid dropping points
+Z_RANGE = (-1.0, 4.0)  # relaxed height band to avoid dropping points
 
 # Yaw correction if camera faces +Y (add 90 deg); keep 0 if already aligned
 CAM_YAW_DEG = 0.0
@@ -189,6 +189,14 @@ def main():
     )
     pcd_base = transform_pcd(pcd_filt, T_local_cam)
     print("pcd_base pts:", len(pcd_base.points))
+    if pcd_base.has_points():
+        ys = np.asarray(pcd_base.points)[:, 1]
+        print("base y min/max:", float(ys.min()), float(ys.max()))
+        pts = np.asarray(pcd_base.points)
+        xs, ys, zs = pts[:, 0], pts[:, 1], pts[:, 2]
+        print("base x min/max:", float(xs.min()), float(xs.max()))
+        print("base y min/max (again):", float(ys.min()), float(ys.max()))
+        print("base z min/max:", float(zs.min()), float(zs.max()))
 
     # Crop ROI
     pcd_roi = _pcd_crop_roi_xy(pcd_base)
