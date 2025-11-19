@@ -6,7 +6,7 @@ render a small occupancy map with 0.5 m grid lines (cell size 5 cm).
 
 ROI (robot frame):
     x in [-1.5, 1.5]  (left/right)
-    y in [-0.5, 2.5]  (backward/forward; robot at (0,0))
+    y in [0.0, 3.0]   (forward, robot at (0,0))
 
 Outputs (Desktop):
     - color PNG, depth PNG (16-bit)
@@ -35,18 +35,22 @@ from d435capture.sensors import (
 )
 
 
-# ROI around robot (meters) - further widened for debugging
-ROI_X = (-6.0, 6.0)
-ROI_Y = (-6.0, 6.0)
+# ROI around robot (meters)
+ROI_X = (-1.5, 1.5)
+ROI_Y = (0.0, 3.0)
+
+# World occupancy for display: 6m x 6m, 5 cm cells
+WORLD_X = (-3.0, 3.0)
+WORLD_Y = (-3.0, 3.0)
 CELL_M = 0.05  # 5 cm resolution
-GRID_W = int(round((ROI_X[1] - ROI_X[0]) / CELL_M))
-GRID_H = int(round((ROI_Y[1] - ROI_Y[0]) / CELL_M))
+GRID_W = int(round((WORLD_X[1] - WORLD_X[0]) / CELL_M))  # 120
+GRID_H = int(round((WORLD_Y[1] - WORLD_Y[0]) / CELL_M))  # 120
 
 VOXEL_SIZE = 0.01  # light downsample (1 cm)
 NB_NEIGHBORS = 30
 STD_RATIO = 2.5
 DEPTH_TRUNC = 3.5
-Z_RANGE = (-1.0, 4.0)  # relaxed height band to avoid dropping points
+Z_RANGE = (-2.0, 1.0)  # keep ground/low obstacles, drop very high points
 
 # Yaw correction if camera faces +Y (add 90 deg); keep 0 if already aligned
 CAM_YAW_DEG = 0.0
@@ -88,7 +92,7 @@ def _pcd_crop_roi_xy(pcd: o3d.geometry.PointCloud) -> o3d.geometry.PointCloud:
 
 
 def _pcd_to_occ(pcd: o3d.geometry.PointCloud) -> np.ndarray:
-    """Top-down projection to occupancy grid (1=free white, 0=occupied black)."""
+    """Top-down projection to a 6x6m occupancy grid (1=free white, 0=occupied black)."""
     occ = np.full((GRID_H, GRID_W), 255, np.uint8)
     if not pcd.has_points():
         return occ
@@ -96,8 +100,8 @@ def _pcd_to_occ(pcd: o3d.geometry.PointCloud) -> np.ndarray:
     xs, ys, zs = pts[:, 0], pts[:, 1], pts[:, 2]
     mask = (zs >= Z_RANGE[0]) & (zs <= Z_RANGE[1])
     xs, ys = xs[mask], ys[mask]
-    cols = ((xs - ROI_X[0]) / CELL_M).astype(int)
-    rows = ((ROI_Y[1] - ys) / CELL_M).astype(int)
+    cols = ((xs - WORLD_X[0]) / CELL_M).astype(int)
+    rows = ((WORLD_Y[1] - ys) / CELL_M).astype(int)
     valid = (rows >= 0) & (rows < GRID_H) & (cols >= 0) & (cols < GRID_W)
     rows, cols = rows[valid], cols[valid]
     occ[rows, cols] = 0
@@ -107,8 +111,8 @@ def _pcd_to_occ(pcd: o3d.geometry.PointCloud) -> np.ndarray:
 def _draw_grid(img: np.ndarray, m_per_major: float = 0.5) -> None:
     """Draw 0.5 m grid lines on an RGB img."""
     h, w = img.shape[:2]
-    x_min, x_max = ROI_X
-    y_min, y_max = ROI_Y
+    x_min, x_max = WORLD_X
+    y_min, y_max = WORLD_Y
     x_res = (x_max - x_min) / float(GRID_W)
     y_res = (y_max - y_min) / float(GRID_H)
 
@@ -118,8 +122,8 @@ def _draw_grid(img: np.ndarray, m_per_major: float = 0.5) -> None:
     def world_to_row(y: float) -> int:
         return int(round((y_max - y) / y_res))
 
-    minor = (220, 220, 220)
-    major = (195, 195, 195)
+    minor = (255, 255, 255)
+    major = (255, 255, 255)
     start_x = np.ceil(x_min / m_per_major) * m_per_major
     x = start_x
     while x <= x_max + 1e-6:
@@ -183,9 +187,9 @@ def main():
     T_local_cam = make_T_local_cam(
         cam_tx=0.0,
         cam_ty=0.0,
-        cam_z=0.063,            # same as --cam-height default
+        cam_z=0.06,             # 6 cm above base
         cam_yaw_rad=np.deg2rad(CAM_YAW_DEG),
-        pitch_deg=40.0,         # same as --cam-pitch default
+        pitch_deg=-20.0,        # +pitch is down, so -20 = 20 deg up tilt
     )
     pcd_base = transform_pcd(pcd_filt, T_local_cam)
     print("pcd_base pts:", len(pcd_base.points))
@@ -207,8 +211,8 @@ def main():
     occ_rgb = cv2.cvtColor(occ, cv2.COLOR_GRAY2BGR)
     _draw_grid(occ_rgb, m_per_major=0.5)
     # Robot marker at (0,0)
-    robot_col = int(round((0.0 - ROI_X[0]) / CELL_M))
-    robot_row = int(round((ROI_Y[1] - 0.0) / CELL_M))
+    robot_col = int(round((0.0 - WORLD_X[0]) / CELL_M))
+    robot_row = int(round((WORLD_Y[1] - 0.0) / CELL_M))
     if 0 <= robot_row < GRID_H and 0 <= robot_col < GRID_W:
         cv2.circle(occ_rgb, (robot_col, robot_row), 3, (0, 255, 255), -1)
 
