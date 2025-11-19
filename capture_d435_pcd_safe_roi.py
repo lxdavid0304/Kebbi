@@ -185,7 +185,16 @@ def main():
     robot_col = int(round((0.0 - WORLD_X[0]) / CELL_M))
     robot_row = int(round((WORLD_Y[1] - 0.0) / CELL_M))
     sensor_rc = (robot_row, robot_col)
-    draw_backward_fan_reference(occ_rgb, sensor_rc)
+    x_res = (WORLD_X[1] - WORLD_X[0]) / float(GRID_W)
+    y_res = (WORLD_Y[1] - WORLD_Y[0]) / float(GRID_H)
+    draw_backward_fan_reference(
+        occ_rgb,
+        sensor_rc,
+        x_res=x_res,
+        y_res=y_res,
+        radius_m=cfg.BACKWARD_FAN_RADIUS_M,
+        fan_deg=cfg.BACKWARD_FAN_DEG,
+    )
     _draw_grid(occ_rgb)
     if 0 <= robot_row < GRID_H and 0 <= robot_col < GRID_W:
         cv2.rectangle(
