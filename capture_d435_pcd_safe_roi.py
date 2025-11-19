@@ -182,11 +182,11 @@ def main():
     occ = _apply_morphology(occ)
 
     occ_rgb = cv2.cvtColor(occ, cv2.COLOR_GRAY2BGR)
+    robot_col = int(round((0.0 - WORLD_X[0]) / CELL_M))
+    robot_row = int(round((WORLD_Y[1] - 0.0) / CELL_M))
     sensor_rc = (robot_row, robot_col)
     draw_backward_fan_reference(occ_rgb, sensor_rc)
     _draw_grid(occ_rgb)
-    robot_col = int(round((0.0 - WORLD_X[0]) / CELL_M))
-    robot_row = int(round((WORLD_Y[1] - 0.0) / CELL_M))
     if 0 <= robot_row < GRID_H and 0 <= robot_col < GRID_W:
         cv2.rectangle(
             occ_rgb,
