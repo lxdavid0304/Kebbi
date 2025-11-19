@@ -178,15 +178,36 @@ def main():
     pcd_base = transform_pcd(pcd_filt, T_local_cam)
     pcd_roi = _crop_roi(pcd_base)
 
-    occ = _pcd_to_occ(pcd_roi)
-    occ = _apply_morphology(occ)
-
-    occ_rgb = cv2.cvtColor(occ, cv2.COLOR_GRAY2BGR)
     robot_col = int(round((0.0 - WORLD_X[0]) / CELL_M))
     robot_row = int(round((WORLD_Y[1] - 0.0) / CELL_M))
-    sensor_rc = (robot_row, robot_col)
+
+    occ_raw = _pcd_to_occ(pcd_roi)
+    occ_safe = _apply_morphology(occ_raw.copy())
+
     x_res = (WORLD_X[1] - WORLD_X[0]) / float(GRID_W)
     y_res = (WORLD_Y[1] - WORLD_Y[0]) / float(GRID_H)
+    sensor_rc = (robot_row, robot_col)
+
+    occ_raw_rgb = cv2.cvtColor(occ_raw, cv2.COLOR_GRAY2BGR)
+    draw_backward_fan_reference(
+        occ_raw_rgb,
+        sensor_rc,
+        x_res=x_res,
+        y_res=y_res,
+        radius_m=cfg.BACKWARD_FAN_RADIUS_M,
+        fan_deg=cfg.BACKWARD_FAN_DEG,
+    )
+    _draw_grid(occ_raw_rgb)
+    if 0 <= robot_row < GRID_H and 0 <= robot_col < GRID_W:
+        cv2.rectangle(
+            occ_raw_rgb,
+            (robot_col - 3, robot_row - 2),
+            (robot_col + 3, robot_row + 2),
+            (0, 255, 255),
+            -1,
+        )
+
+    occ_rgb = cv2.cvtColor(occ_safe, cv2.COLOR_GRAY2BGR)
     draw_backward_fan_reference(
         occ_rgb,
         sensor_rc,
@@ -206,11 +227,13 @@ def main():
         )
 
     scale = 8
+    occ_raw_big = cv2.resize(occ_raw_rgb, (GRID_W * scale, GRID_H * scale), interpolation=cv2.INTER_NEAREST)
     occ_big = cv2.resize(occ_rgb, (GRID_W * scale, GRID_H * scale), interpolation=cv2.INTER_NEAREST)
 
     out_dir = _desktop()
     ts = time.strftime("%Y%m%d_%H%M%S")
-    img_path = out_dir / f"safe_roi_occ_{ts}.png"
+    img_raw_path = out_dir / f"raw_roi_occ_{ts}.png"
+    img_safe_path = out_dir / f"safe_roi_occ_{ts}.png"
     color_path = out_dir / f"safe_roi_color_{ts}.png"
     depth_path = out_dir / f"safe_roi_depth_{ts}.png"
     p_raw = out_dir / f"safe_roi_raw_cam_{ts}.ply"
@@ -221,13 +244,15 @@ def main():
     color_bgr = cv2.cvtColor(color_np, cv2.COLOR_RGB2BGR)
     cv2.imwrite(str(color_path), color_bgr)
     cv2.imwrite(str(depth_path), depth_np)
-    cv2.imwrite(str(img_path), occ_big)
+    cv2.imwrite(str(img_raw_path), occ_raw_big)
+    cv2.imwrite(str(img_safe_path), occ_big)
     o3d.io.write_point_cloud(str(p_raw), pcd_cam)
     o3d.io.write_point_cloud(str(p_filt), pcd_filt)
     o3d.io.write_point_cloud(str(p_base), pcd_base)
     o3d.io.write_point_cloud(str(p_roi), pcd_roi)
 
-    print(f"Saved occupancy -> {img_path}")
+    print(f"Saved raw occ   -> {img_raw_path}")
+    print(f"Saved safe occ  -> {img_safe_path}")
     print(f"Saved color     -> {color_path}")
     print(f"Saved depth     -> {depth_path}")
 
@@ -236,6 +261,7 @@ def main():
     o3d.visualization.draw_geometries([_flip_pcd(pcd_filt)], window_name="Cam frame (filtered, flipped)")
     o3d.visualization.draw_geometries([_flip_pcd(pcd_base)], window_name="Base frame (filtered, flipped)")
     o3d.visualization.draw_geometries([_flip_pcd(pcd_roi)], window_name="ROI cropped (filtered, flipped)")
+    cv2.imshow("Raw ROI occupancy", occ_raw_big)
     cv2.imshow("Safe ROI occupancy", occ_big)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
