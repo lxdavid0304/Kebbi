@@ -122,8 +122,8 @@ def _draw_grid(img: np.ndarray, m_per_major: float = 0.5) -> None:
     def world_to_row(y: float) -> int:
         return int(round((y_max - y) / y_res))
 
-    minor = (255, 255, 255)
-    major = (255, 255, 255)
+    minor = (210, 210, 210)
+    major = (185, 185, 185)
     start_x = np.ceil(x_min / m_per_major) * m_per_major
     x = start_x
     while x <= x_max + 1e-6:
@@ -230,7 +230,8 @@ def main():
     p_base = out_dir / f"roi_filt_base_{ts}.ply"
     p_roi = out_dir / f"roi_filt_roi_{ts}.ply"
 
-    cv2.imwrite(str(color_path), cv2.cvtColor(color_np, cv2.COLOR_RGB2BGR))
+    color_bgr = cv2.cvtColor(color_np, cv2.COLOR_RGB2BGR)
+    cv2.imwrite(str(color_path), color_bgr)
     cv2.imwrite(str(depth_path), depth_np)
     cv2.imwrite(str(img_path), occ_big)
     o3d.io.write_point_cloud(str(p_raw), pcd_cam)
@@ -246,7 +247,11 @@ def main():
     print(f"Saved PLY filt_base-> {p_base}")
     print(f"Saved PLY filt_roi -> {p_roi}")
 
-    # Show
+    # Show color before point cloud windows
+    cv2.imshow("Color frame", color_bgr)
+    cv2.waitKey(1)
+
+    # Show point clouds
     o3d.visualization.draw_geometries([_flip_pcd(pcd_filt)], window_name="Cam frame (filtered, flipped)")
     o3d.visualization.draw_geometries([_flip_pcd(pcd_base)], window_name="Base frame (filtered, flipped)")
     o3d.visualization.draw_geometries([_flip_pcd(pcd_roi)], window_name="ROI cropped (filtered, flipped)")
