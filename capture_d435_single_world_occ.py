@@ -14,7 +14,7 @@ import open3d as o3d
 
 from d435capture import config as cfg
 from d435capture.occupancy import draw_backward_fan_reference
-from d435capture.robot_tcp import RobotTCPClient
+from d435capture.odometry import OdometryClient
 from d435capture.sensors import (
     auto_start_realsense,
     build_o3d_intrinsic_from_frame,
@@ -143,38 +143,30 @@ def _integrate_roi_into_world(occ_roi: np.ndarray, pose_xy_theta, world_img: np.
                     world_img[world_r, world_c] = 0
 
 
-def _get_odom_pose(tcp: RobotTCPClient) -> tuple[float, float, float] | None:
-    payload = tcp.get_pose()
-    if payload is None:
-        return None
-    mode, data = payload
-    if mode == "xy":
-        return float(data[0]), float(data[1]), float(data[2])
-    if mode == "rc":
-        r, c, heading = data
-        x = WORLD_X[0] + c * CELL_M
-        y = WORLD_Y[1] - r * CELL_M
-        return x, y, float(heading)
-    return None
+def _fetch_pose_from_odometry(timeout_sec: float = 5.0) -> tuple[float, float, float] | None:
+    client = OdometryClient(host=cfg.ROBOT_TCP_IP, port=cfg.ROBOT_TCP_PORT)
+    client.start()
+    pose_xytheta = None
+    try:
+        t0 = time.time()
+        while time.time() - t0 < timeout_sec:
+            if client.is_connected():
+                pose = client.get_pose()
+                pose_xytheta = (pose.x_m, pose.y_m, pose.heading_deg)
+                break
+            time.sleep(0.1)
+    finally:
+        client.stop()
+    return pose_xytheta
 
 
 def main():
-    tcp = RobotTCPClient(
-        ip=cfg.ROBOT_TCP_IP,
-        port=cfg.ROBOT_TCP_PORT,
-        on_pos=None,
-        on_event=None,
-    )
-    pose_xytheta = None
+    print("Attempting to fetch odometry pose...")
     try:
-        tcp.connect()
-        print("Waiting for POSM...")
-        t0 = time.time()
-        while time.time() - t0 < 5.0 and pose_xytheta is None:
-            pose_xytheta = _get_odom_pose(tcp)
-            time.sleep(0.1)
+        pose_xytheta = _fetch_pose_from_odometry(timeout_sec=5.0)
     except Exception as exc:
-        print(f"[tcp] connect failed: {exc}")
+        print(f"[odom] failed to fetch pose: {exc}")
+        pose_xytheta = None
 
     pipeline, profile, align, depth_scale = auto_start_realsense()
     frames = pipeline.wait_for_frames()
@@ -248,11 +240,12 @@ def main():
 
     _draw_grid(world_rgb)
     display = cv2.resize(world_rgb, (GRID_W * 8, GRID_H * 8), interpolation=cv2.INTER_NEAREST)
-    cv2.imshow("Single-frame world occupancy", display)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
-    pipeline.stop()
-    tcp.stop()
+    try:
+        cv2.imshow("Single-frame world occupancy", display)
+        cv2.waitKey(0)
+    finally:
+        cv2.destroyAllWindows()
+        pipeline.stop()
 
 
 if __name__ == "__main__":
