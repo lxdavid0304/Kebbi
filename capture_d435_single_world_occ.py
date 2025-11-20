@@ -160,7 +160,7 @@ def _get_odom_pose(tcp: RobotTCPClient) -> tuple[float, float, float] | None:
 
 def main():
     tcp = RobotTCPClient(
-        host=cfg.ROBOT_TCP_IP,
+        ip=cfg.ROBOT_TCP_IP,
         port=cfg.ROBOT_TCP_PORT,
         on_pos=None,
         on_event=None,
