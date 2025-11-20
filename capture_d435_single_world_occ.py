@@ -212,8 +212,8 @@ def main():
 
     world = np.full((GRID_H, GRID_W), 255, np.uint8)
     if pose_xytheta is None:
-        pose_xytheta = (cfg.ROBOT_START[0], cfg.ROBOT_START[1], cfg.ROBOT_INIT_YAW_DEG)
-        print("using default pose", pose_xytheta)
+        pose_xytheta = (cfg.ROBOT_START[0], cfg.ROBOT_START[1], 0.0)
+        print("using default pose (front = 0 deg)", pose_xytheta)
     _integrate_roi_into_world(occ_roi, pose_xytheta, world)
 
     world_rgb = cv2.cvtColor(world, cv2.COLOR_GRAY2BGR)
