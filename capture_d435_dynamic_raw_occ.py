@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """
-Streaming occupancy viewer that continuously applies the same safe-map
-pipeline as capture_d435_pcd_safe_roi.py but only renders the processed
-occupancy grid (with robot rectangle and backward safety fan). Point cloud
-windows and raw views are intentionally omitted so that the display updates
-in real time as obstacles change.
+Streaming occupancy viewer that continuously renders the raw ROI occupancy
+grid (with robot rectangle and backward rawty fan) in a 6x6m canvas. This
+view omits point cloud windows and only shows the immediate map used for
+navigation so you can see updates live as obstacles change.
 """
 
 from __future__ import annotations
@@ -34,10 +33,6 @@ WORLD_Y = (-3.0, 3.0)
 CELL_M = 0.05
 GRID_W = int(round((WORLD_X[1] - WORLD_X[0]) / CELL_M))
 GRID_H = int(round((WORLD_Y[1] - WORLD_Y[0]) / CELL_M))
-
-CLOSE_KERNEL = 3
-OPEN_KERNEL = 1
-DILATE_KERNEL = (6, 5)
 
 VOXEL_SIZE = 0.01
 NB_NEIGHBORS = 30
@@ -83,16 +78,6 @@ def _pcd_to_occ(pcd: o3d.geometry.PointCloud) -> np.ndarray:
     return occ
 
 
-def _apply_safe_filters(occ: np.ndarray) -> np.ndarray:
-    kernel_close = cv2.getStructuringElement(cv2.MORPH_RECT, (CLOSE_KERNEL, CLOSE_KERNEL))
-    occ2 = cv2.morphologyEx(occ, cv2.MORPH_CLOSE, kernel_close)
-    if OPEN_KERNEL > 1:
-        kernel_open = cv2.getStructuringElement(cv2.MORPH_RECT, (OPEN_KERNEL, OPEN_KERNEL))
-        occ2 = cv2.morphologyEx(occ2, cv2.MORPH_OPEN, kernel_open)
-    kernel_dilate = cv2.getStructuringElement(cv2.MORPH_RECT, DILATE_KERNEL)
-    return cv2.dilate(occ2, kernel_dilate)
-
-
 def _draw_grid(img: np.ndarray, m_per_major: float = 0.5) -> None:
     h, w = img.shape[:2]
     x_min, x_max = WORLD_X
@@ -127,7 +112,7 @@ def _draw_grid(img: np.ndarray, m_per_major: float = 0.5) -> None:
 
 def main():
     pipeline, profile, align, depth_scale = auto_start_realsense()
-    print("Streaming safe occupancy. Press 'q' in window to exit.")
+    print("Streaming raw occupancy. Press 'q' in window to exit.")
 
     robot_col = int(round((0.0 - WORLD_X[0]) / CELL_M))
     robot_row = int(round((WORLD_Y[1] - 0.0) / CELL_M))
@@ -177,10 +162,9 @@ def main():
             pcd_base = transform_pcd(pcd_filt, T_local_cam)
             pcd_roi = _crop_roi(pcd_base)
 
-            occ_raw = _pcd_to_occ(pcd_roi)
-            occ_safe = _apply_safe_filters(occ_raw)
+            occ = _pcd_to_occ(pcd_roi)
 
-            occ_rgb = cv2.cvtColor(occ_safe, cv2.COLOR_GRAY2BGR)
+            occ_rgb = cv2.cvtColor(occ, cv2.COLOR_GRAY2BGR)
             draw_backward_fan_reference(
                 occ_rgb,
                 sensor_rc,
@@ -200,7 +184,7 @@ def main():
                 )
 
             display = cv2.resize(occ_rgb, (GRID_W * 8, GRID_H * 8), interpolation=cv2.INTER_NEAREST)
-            cv2.imshow("Safe ROI occupancy (live)", display)
+            cv2.imshow("raw ROI occupancy (live)", display)
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q") or key == 27:
                 break
