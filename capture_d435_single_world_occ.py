@@ -221,7 +221,9 @@ def main():
         print(f"z min/max: {zs_all.min():.3f} ~ {zs_all.max():.3f}")
     pcd_roi = _crop_roi(pcd_base)
     occ_roi = _pcd_to_occ(pcd_roi)
-    if np.any(occ_roi == 0):
+    occ_count = int(np.sum(occ_roi == 0))
+    print(f"[occ] occupied cells: {occ_count}")
+    if occ_count > 0:
         occ_idx = np.argwhere(occ_roi == 0)
         min_row = occ_idx[:, 0].min()
         min_col = occ_idx[:, 1].min()
