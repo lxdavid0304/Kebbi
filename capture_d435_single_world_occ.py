@@ -43,8 +43,9 @@ DEPTH_TRUNC = 3.5
 
 CAM_YAW_DEG = 0.0
 CAM_HEIGHT = 0.06
-CAM_PITCH_DEG = 0.0   # 暫時設 0 度，方便檢查距離
-YAW_OFFSET_DEG = 0.0  # 先設 0，若方向偏左右再調 -90 或 +90
+CAM_PITCH_DEG = -20.0   # 還原 -20 度仰角
+YAW_OFFSET_DEG = 90.0   # 里程計前進軸為 +X 時，偏移 +90
+MIRROR_X = True         # 若左右顛倒，可設 True 將 ROI 佔據圖左右翻轉
 
 
 def _desktop() -> Path:
@@ -84,6 +85,8 @@ def _pcd_to_occ(pcd: o3d.geometry.PointCloud) -> np.ndarray:
     counts = np.zeros_like(occ, dtype=np.int32)
     np.add.at(counts, (rows, cols), 1)
     occ[counts >= cfg.OCC_MIN_PTS] = 0
+    if MIRROR_X:
+        occ = cv2.flip(occ, 1)  # 左右翻轉
     return occ
 
 
