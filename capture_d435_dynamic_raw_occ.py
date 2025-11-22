@@ -26,7 +26,7 @@ from d435capture.sensors import (
 
 ROI_X = (-1.5, 1.5)
 ROI_Y = (0.0, 3.0)
-Z_RANGE = (0.05, 2.0)
+Z_RANGE = (0.2, 1.0)  # align with single-frame tuning to抑制近距離地板
 
 WORLD_X = (-3.0, 3.0)
 WORLD_Y = (-3.0, 3.0)
