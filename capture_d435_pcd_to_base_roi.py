@@ -26,6 +26,7 @@ import numpy as np
 import open3d as o3d
 
 from d435capture import config as cfg
+from d435capture.occupancy import draw_backward_fan_reference
 from d435capture.sensors import (
     auto_start_realsense,
     build_o3d_intrinsic_from_frame,
@@ -42,11 +43,11 @@ CELL_M = 0.05  # 5 cm resolution
 # Local ROI grid (3m x 3m at 5cm -> 60x60)
 ROI_GRID_W = int(round((ROI_X[1] - ROI_X[0]) / CELL_M))  # 60
 ROI_GRID_H = int(round((ROI_Y[1] - ROI_Y[0]) / CELL_M))  # 60
-# For this script, the "world" view is exactly the 3x3 ROI
-WORLD_X = ROI_X
-WORLD_Y = ROI_Y
-GRID_W = ROI_GRID_W
-GRID_H = ROI_GRID_H
+# Global 6x6 m canvas (same 5 cm cell, 120x120)
+WORLD_X = (-3.0, 3.0)
+WORLD_Y = (-3.0, 3.0)
+WORLD_GRID_W = int(round((WORLD_X[1] - WORLD_X[0]) / CELL_M))  # 120
+WORLD_GRID_H = int(round((WORLD_Y[1] - WORLD_Y[0]) / CELL_M))  # 120
 
 VOXEL_SIZE = 0.01  # light downsample (1 cm)
 NB_NEIGHBORS = 30
@@ -93,9 +94,26 @@ def _pcd_crop_roi_xy(pcd: o3d.geometry.PointCloud) -> o3d.geometry.PointCloud:
     return pcd.select_by_index(idx)
 
 
-def _pcd_to_occ(pcd: o3d.geometry.PointCloud) -> np.ndarray:
-    """Top-down projection to a 6x6m occupancy grid (1=free white, 0=occupied black)."""
-    occ = np.full((GRID_H, GRID_W), 255, np.uint8)
+def _pcd_to_occ_roi(pcd: o3d.geometry.PointCloud) -> np.ndarray:
+    """Top-down projection to a 3x3m ROI grid (1=free, 0=occupied)."""
+    occ = np.full((ROI_GRID_H, ROI_GRID_W), 255, np.uint8)
+    if not pcd.has_points():
+        return occ
+    pts = np.asarray(pcd.points)
+    xs, ys, zs = pts[:, 0], pts[:, 1], pts[:, 2]
+    mask = (zs >= Z_RANGE[0]) & (zs <= Z_RANGE[1])
+    xs, ys = xs[mask], ys[mask]
+    cols = ((xs - ROI_X[0]) / CELL_M).astype(int)
+    rows = ((ROI_Y[1] - ys) / CELL_M).astype(int)
+    valid = (rows >= 0) & (rows < ROI_GRID_H) & (cols >= 0) & (cols < ROI_GRID_W)
+    rows, cols = rows[valid], cols[valid]
+    occ[rows, cols] = 0
+    return occ
+
+
+def _pcd_to_occ_world(pcd: o3d.geometry.PointCloud) -> np.ndarray:
+    """Project cropped ROI points onto 6x6 world grid."""
+    occ = np.full((WORLD_GRID_H, WORLD_GRID_W), 255, np.uint8)
     if not pcd.has_points():
         return occ
     pts = np.asarray(pcd.points)
@@ -104,19 +122,19 @@ def _pcd_to_occ(pcd: o3d.geometry.PointCloud) -> np.ndarray:
     xs, ys = xs[mask], ys[mask]
     cols = ((xs - WORLD_X[0]) / CELL_M).astype(int)
     rows = ((WORLD_Y[1] - ys) / CELL_M).astype(int)
-    valid = (rows >= 0) & (rows < GRID_H) & (cols >= 0) & (cols < GRID_W)
+    valid = (rows >= 0) & (rows < WORLD_GRID_H) & (cols >= 0) & (cols < WORLD_GRID_W)
     rows, cols = rows[valid], cols[valid]
     occ[rows, cols] = 0
     return occ
 
 
-def _draw_grid(img: np.ndarray, m_per_major: float = 0.5) -> None:
-    """Draw 0.5 m grid lines on an RGB img."""
+def _draw_grid(img: np.ndarray, x_range, y_range, grid_w: int, grid_h: int, m_per_major: float = 0.5) -> None:
+    """Draw 0.5 m grid lines on an RGB img using provided extents."""
     h, w = img.shape[:2]
-    x_min, x_max = WORLD_X
-    y_min, y_max = WORLD_Y
-    x_res = (x_max - x_min) / float(GRID_W)
-    y_res = (y_max - y_min) / float(GRID_H)
+    x_min, x_max = x_range
+    y_min, y_max = y_range
+    x_res = (x_max - x_min) / float(grid_w)
+    y_res = (y_max - y_min) / float(grid_h)
 
     def world_to_col(x: float) -> int:
         return int(round((x - x_min) / x_res))
@@ -209,23 +227,61 @@ def main():
     pcd_roi = _pcd_crop_roi_xy(pcd_base)
     print("pcd_roi pts:", len(pcd_roi.points))
 
-    # Occupancy
-    occ = _pcd_to_occ(pcd_roi)
-    occ_rgb = cv2.cvtColor(occ, cv2.COLOR_GRAY2BGR)
-    _draw_grid(occ_rgb, m_per_major=0.5)
-    # Robot marker at (0,0)
-    robot_col = int(round((0.0 - WORLD_X[0]) / CELL_M))
-    robot_row = int(round((WORLD_Y[1] - 0.0) / CELL_M))
-    if 0 <= robot_row < GRID_H and 0 <= robot_col < GRID_W:
-        cv2.circle(occ_rgb, (robot_col, robot_row), 3, (0, 255, 255), -1)
+    # Occupancy (ROI view)
+    occ_roi = _pcd_to_occ_roi(pcd_roi)
+    occ_roi_rgb = cv2.cvtColor(occ_roi, cv2.COLOR_GRAY2BGR)
+    _draw_grid(occ_roi_rgb, ROI_X, ROI_Y, ROI_GRID_W, ROI_GRID_H, m_per_major=0.5)
+    robot_col_roi = int(round((0.0 - ROI_X[0]) / CELL_M))
+    robot_row_roi = int(round((ROI_Y[1] - 0.0) / CELL_M))
+    if 0 <= robot_row_roi < ROI_GRID_H and 0 <= robot_col_roi < ROI_GRID_W:
+        cv2.rectangle(
+            occ_roi_rgb,
+            (robot_col_roi - 3, robot_row_roi - 2),
+            (robot_col_roi + 3, robot_row_roi + 2),
+            (0, 255, 255),
+            -1,
+        )
+    occ_roi_big = cv2.resize(
+        occ_roi_rgb,
+        (ROI_GRID_W * 8, ROI_GRID_H * 8),
+        interpolation=cv2.INTER_NEAREST,
+    )
 
-    scale = 8
-    occ_big = cv2.resize(occ_rgb, (GRID_W * scale, GRID_H * scale), interpolation=cv2.INTER_NEAREST)
+    # Occupancy (world 6x6) using the same 3x3 ROI points pasted into world map
+    occ_world = _pcd_to_occ_world(pcd_roi)
+    occ_world_rgb = cv2.cvtColor(occ_world, cv2.COLOR_GRAY2BGR)
+    _draw_grid(occ_world_rgb, WORLD_X, WORLD_Y, WORLD_GRID_W, WORLD_GRID_H, m_per_major=0.5)
+    robot_col_w = int(round((0.0 - WORLD_X[0]) / CELL_M))
+    robot_row_w = int(round((WORLD_Y[1] - 0.0) / CELL_M))
+    x_res_w = (WORLD_X[1] - WORLD_X[0]) / float(WORLD_GRID_W)
+    y_res_w = (WORLD_Y[1] - WORLD_Y[0]) / float(WORLD_GRID_H)
+    draw_backward_fan_reference(
+        occ_world_rgb,
+        (robot_row_w, robot_col_w),
+        x_res=x_res_w,
+        y_res=y_res_w,
+        radius_m=cfg.BACKWARD_FAN_RADIUS_M,
+        fan_deg=cfg.BACKWARD_FAN_DEG,
+    )
+    if 0 <= robot_row_w < WORLD_GRID_H and 0 <= robot_col_w < WORLD_GRID_W:
+        cv2.rectangle(
+            occ_world_rgb,
+            (robot_col_w - 3, robot_row_w - 2),
+            (robot_col_w + 3, robot_row_w + 2),
+            (0, 255, 255),
+            -1,
+        )
+    occ_world_big = cv2.resize(
+        occ_world_rgb,
+        (WORLD_GRID_W * 5, WORLD_GRID_H * 5),
+        interpolation=cv2.INTER_NEAREST,
+    )
 
     # Save
     out_dir = _desktop()
     ts = time.strftime("%Y%m%d_%H%M%S")
     img_path = out_dir / f"roi_occ_{ts}.png"
+    world_img_path = out_dir / f"world_occ_{ts}.png"
     color_path = out_dir / f"roi_color_{ts}.png"
     depth_path = out_dir / f"roi_depth_{ts}.png"
     p_raw = out_dir / f"roi_raw_cam_{ts}.ply"
@@ -236,13 +292,15 @@ def main():
     color_bgr = cv2.cvtColor(color_np, cv2.COLOR_RGB2BGR)
     cv2.imwrite(str(color_path), color_bgr)
     cv2.imwrite(str(depth_path), depth_np)
-    cv2.imwrite(str(img_path), occ_big)
+    cv2.imwrite(str(img_path), occ_roi_big)
+    cv2.imwrite(str(world_img_path), occ_world_big)
     o3d.io.write_point_cloud(str(p_raw), pcd_cam)
     o3d.io.write_point_cloud(str(p_filt), pcd_filt)
     o3d.io.write_point_cloud(str(p_base), pcd_base)
     o3d.io.write_point_cloud(str(p_roi), pcd_roi)
 
-    print(f"Saved occupancy -> {img_path}")
+    print(f"Saved ROI occupancy -> {img_path}")
+    print(f"Saved world occupancy -> {world_img_path}")
     print(f"Saved color     -> {color_path}")
     print(f"Saved depth     -> {depth_path}")
     print(f"Saved PLY raw_cam  -> {p_raw}")
@@ -258,7 +316,8 @@ def main():
     o3d.visualization.draw_geometries([_flip_pcd(pcd_filt)], window_name="Cam frame (filtered, flipped)")
     o3d.visualization.draw_geometries([_flip_pcd(pcd_base)], window_name="Base frame (filtered, flipped)")
     o3d.visualization.draw_geometries([_flip_pcd(pcd_roi)], window_name="ROI cropped (filtered, flipped)")
-    cv2.imshow("ROI occupancy (0.5m grid)", occ_big)
+    cv2.imshow("ROI occupancy (0.5m grid)", occ_roi_big)
+    cv2.imshow("World occupancy 6x6 (ROI pasted)", occ_world_big)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
     pipeline.stop()
