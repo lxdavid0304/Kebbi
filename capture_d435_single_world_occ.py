@@ -25,7 +25,7 @@ from d435capture.sensors import (
 
 ROI_X = (-1.5, 1.5)
 ROI_Y = (0.0, 3.0)
-Z_RANGE = (0.05, 2.0)
+Z_RANGE = (0.2, 1.0)  # align with single-frame ROI tuning
 # Local ROI grid size (3m x 3m @ 5cm)
 ROI_GRID_W = int(round((ROI_X[1] - ROI_X[0]) / cfg.CELL_M))
 ROI_GRID_H = int(round((ROI_Y[1] - ROI_Y[0]) / cfg.CELL_M))
