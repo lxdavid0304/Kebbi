@@ -44,7 +44,7 @@ DEPTH_TRUNC = 3.5
 CAM_YAW_DEG = 0.0
 CAM_HEIGHT = 0.06
 CAM_PITCH_DEG = -20.0
-YAW_OFFSET_DEG = 0.0  # 若里程計前進軸不同，可測試 -90 或 +90
+YAW_OFFSET_DEG = 90.0  # 里程計前進軸如為 +X，保持 +90；需再調整可改成 -90 或 0
 
 
 def _desktop() -> Path:
@@ -238,8 +238,8 @@ def main():
     else:
         print("[odom] pose before offset:", pose_xytheta)
         x_m, y_m, yaw_deg = pose_xytheta
-        # 若里程計 yaw=0 是朝 +X，可先測試 YAW_OFFSET_DEG = -90（或 +90）再觀察貼圖
-        pose_xytheta = (x_m, y_m, yaw_deg + YAW_OFFSET_DEG)
+        # 里程計若以 +X 為前進，交換 x/y 再套偏航補償
+        pose_xytheta = (y_m, x_m, yaw_deg + YAW_OFFSET_DEG)
         print("[odom] pose after  offset:", pose_xytheta)
     _integrate_roi_into_world(occ_roi, pose_xytheta, world)
 
