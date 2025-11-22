@@ -26,7 +26,7 @@ from d435capture.sensors import (
 
 ROI_X = (-1.5, 1.5)
 ROI_Y = (0.0, 3.0)
-Z_RANGE = (-2.0, 1.0)
+Z_RANGE = (-0.3, 1.0)
 
 WORLD_X = (-3.0, 3.0)
 WORLD_Y = (-3.0, 3.0)
@@ -133,6 +133,7 @@ def main():
             color_np = np.asanyarray(color_frame.get_data())
             depth_np = np.asanyarray(depth_frame.get_data())
             intr = build_o3d_intrinsic_from_frame(color_frame)
+            color_bgr = cv2.cvtColor(color_np, cv2.COLOR_RGB2BGR)
 
             pcd_cam = frames_to_pointcloud_o3d(
                 color_np,
@@ -160,6 +161,9 @@ def main():
                 pitch_deg=CAM_PITCH_DEG,
             )
             pcd_base = transform_pcd(pcd_filt, T_local_cam)
+            if pcd_base.has_points():
+                zs_all = np.asarray(pcd_base.points)[:, 2]
+                print(f"z min/max: {zs_all.min():.3f} ~ {zs_all.max():.3f}")
             pcd_roi = _crop_roi(pcd_base)
 
             occ = _pcd_to_occ(pcd_roi)
@@ -185,6 +189,7 @@ def main():
 
             display = cv2.resize(occ_rgb, (GRID_W * 8, GRID_H * 8), interpolation=cv2.INTER_NEAREST)
             cv2.imshow("raw ROI occupancy (live)", display)
+            cv2.imshow("Color frame", color_bgr)
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q") or key == 27:
                 break
