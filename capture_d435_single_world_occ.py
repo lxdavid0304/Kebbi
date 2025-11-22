@@ -221,6 +221,15 @@ def main():
         print(f"z min/max: {zs_all.min():.3f} ~ {zs_all.max():.3f}")
     pcd_roi = _crop_roi(pcd_base)
     occ_roi = _pcd_to_occ(pcd_roi)
+    if np.any(occ_roi == 0):
+        occ_idx = np.argwhere(occ_roi == 0)
+        min_row = occ_idx[:, 0].min()
+        min_col = occ_idx[:, 1].min()
+        y_front_m = ROI_Y[1] - (min_row + 0.5) * CELL_M  # 前方最近障礙距離（m）
+        x_left_m = ROI_X[0] + (min_col + 0.5) * CELL_M  # 最左障礙相對機器人（m）
+        print(f"[occ] nearest front ~ {y_front_m:.2f} m, left edge ~ {x_left_m:.2f} m")
+    else:
+        print("[occ] no occupied cells in ROI")
 
     world = np.full((GRID_H, GRID_W), 255, np.uint8)
     if pose_xytheta is None:
