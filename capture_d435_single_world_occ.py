@@ -44,6 +44,7 @@ DEPTH_TRUNC = 3.5
 CAM_YAW_DEG = 0.0
 CAM_HEIGHT = 0.06
 CAM_PITCH_DEG = -20.0
+YAW_OFFSET_DEG = 0.0  # 若里程計前進軸不同，可測試 -90 或 +90
 
 
 def _desktop() -> Path:
@@ -225,6 +226,12 @@ def main():
     if pose_xytheta is None:
         pose_xytheta = (cfg.ROBOT_START[0], cfg.ROBOT_START[1], 0.0)
         print("using default pose (front = 0 deg)", pose_xytheta)
+    else:
+        print("[odom] pose before offset:", pose_xytheta)
+        x_m, y_m, yaw_deg = pose_xytheta
+        # 若里程計 yaw=0 是朝 +X，可先測試 YAW_OFFSET_DEG = -90（或 +90）再觀察貼圖
+        pose_xytheta = (x_m, y_m, yaw_deg + YAW_OFFSET_DEG)
+        print("[odom] pose after  offset:", pose_xytheta)
     _integrate_roi_into_world(occ_roi, pose_xytheta, world)
 
     world_rgb = cv2.cvtColor(world, cv2.COLOR_GRAY2BGR)
