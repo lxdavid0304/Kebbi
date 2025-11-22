@@ -43,8 +43,8 @@ DEPTH_TRUNC = 3.5
 
 CAM_YAW_DEG = 0.0
 CAM_HEIGHT = 0.06
-CAM_PITCH_DEG = -20.0
-YAW_OFFSET_DEG = 90.0  # 里程計前進軸如為 +X，保持 +90；需再調整可改成 -90 或 0
+CAM_PITCH_DEG = 0.0   # 暫時設 0 度，方便檢查距離
+YAW_OFFSET_DEG = 0.0  # 先設 0，若方向偏左右再調 -90 或 +90
 
 
 def _desktop() -> Path:
