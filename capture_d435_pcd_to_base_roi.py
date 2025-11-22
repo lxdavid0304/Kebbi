@@ -38,19 +38,21 @@ from d435capture.sensors import (
 # ROI around robot (meters)
 ROI_X = (-1.5, 1.5)
 ROI_Y = (0.0, 3.0)
-
-# World occupancy for display: 6m x 6m, 5 cm cells
-WORLD_X = (-3.0, 3.0)
-WORLD_Y = (-3.0, 3.0)
 CELL_M = 0.05  # 5 cm resolution
-GRID_W = int(round((WORLD_X[1] - WORLD_X[0]) / CELL_M))  # 120
-GRID_H = int(round((WORLD_Y[1] - WORLD_Y[0]) / CELL_M))  # 120
+# Local ROI grid (3m x 3m at 5cm -> 60x60)
+ROI_GRID_W = int(round((ROI_X[1] - ROI_X[0]) / CELL_M))  # 60
+ROI_GRID_H = int(round((ROI_Y[1] - ROI_Y[0]) / CELL_M))  # 60
+# For this script, the "world" view is exactly the 3x3 ROI
+WORLD_X = ROI_X
+WORLD_Y = ROI_Y
+GRID_W = ROI_GRID_W
+GRID_H = ROI_GRID_H
 
 VOXEL_SIZE = 0.01  # light downsample (1 cm)
 NB_NEIGHBORS = 30
 STD_RATIO = 2.5
 DEPTH_TRUNC = 3.5
-Z_RANGE = (-2.0, 1.0)  # keep ground/low obstacles, drop very high points
+Z_RANGE = (0.2, 1.0)  # tighter height band to drop floor
 
 # Yaw correction if camera faces +Y (add 90 deg); keep 0 if already aligned
 CAM_YAW_DEG = 0.0
@@ -201,6 +203,7 @@ def main():
         print("base x min/max:", float(xs.min()), float(xs.max()))
         print("base y min/max (again):", float(ys.min()), float(ys.max()))
         print("base z min/max:", float(zs.min()), float(zs.max()))
+    print(f"Z_RANGE filter: {Z_RANGE[0]} .. {Z_RANGE[1]}")
 
     # Crop ROI
     pcd_roi = _pcd_crop_roi_xy(pcd_base)

@@ -26,6 +26,9 @@ from d435capture.sensors import (
 ROI_X = (-1.5, 1.5)
 ROI_Y = (0.0, 3.0)
 Z_RANGE = (0.05, 2.0)
+# Local ROI grid size (3m x 3m @ 5cm)
+ROI_GRID_W = int(round((ROI_X[1] - ROI_X[0]) / cfg.CELL_M))
+ROI_GRID_H = int(round((ROI_Y[1] - ROI_Y[0]) / cfg.CELL_M))
 
 WORLD_X = (-3.0, 3.0)
 WORLD_Y = (-3.0, 3.0)
@@ -65,7 +68,8 @@ def _crop_roi(pcd: o3d.geometry.PointCloud) -> o3d.geometry.PointCloud:
 
 
 def _pcd_to_occ(pcd: o3d.geometry.PointCloud) -> np.ndarray:
-    occ = np.full((GRID_H, GRID_W), 255, np.uint8)
+    # Local ROI occupancy grid (3x3m)
+    occ = np.full((ROI_GRID_H, ROI_GRID_W), 255, np.uint8)
     if not pcd.has_points():
         return occ
     pts = np.asarray(pcd.points)
@@ -74,7 +78,7 @@ def _pcd_to_occ(pcd: o3d.geometry.PointCloud) -> np.ndarray:
     xs, ys = xs[mask], ys[mask]
     cols = ((xs - ROI_X[0]) / CELL_M).astype(int)
     rows = ((ROI_Y[1] - ys) / CELL_M).astype(int)
-    valid = (rows >= 0) & (rows < GRID_H) & (cols >= 0) & (cols < GRID_W)
+    valid = (rows >= 0) & (rows < ROI_GRID_H) & (cols >= 0) & (cols < ROI_GRID_W)
     rows, cols = rows[valid], cols[valid]
     counts = np.zeros_like(occ, dtype=np.int32)
     np.add.at(counts, (rows, cols), 1)
@@ -135,12 +139,16 @@ def _integrate_roi_into_world(occ_roi: np.ndarray, pose_xy_theta, world_img: np.
     offset_row = int(round(center_world[1] - occ_roi.shape[0] / 2))
 
     for r in range(rotated.shape[0]):
-        for c in range(rotated.shape[1]):
-            if rotated[r, c] == 0:
-                world_r = r + offset_row
-                world_c = c + offset_col
-                if 0 <= world_r < GRID_H and 0 <= world_c < GRID_W:
-                    world_img[world_r, world_c] = 0
+        rr = r + offset_row
+        if rr < 0 or rr >= GRID_H:
+            continue
+        row_data = rotated[r]
+        cc_start = offset_col
+        for c, val in enumerate(row_data):
+            if val == 0:
+                cc = cc_start + c
+                if 0 <= cc < GRID_W:
+                    world_img[rr, cc] = 0
 
 
 def _fetch_pose_from_odometry(timeout_sec: float = 5.0) -> tuple[float, float, float] | None:
