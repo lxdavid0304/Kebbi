@@ -6,3 +6,11 @@ open3d_data/
 *.npy
 *.ply
 *.log
+AGENTS.md
+Kebbi/
+MyApplication12/backup/
+MyApplication12/My Application12.zip
+raw_roi_occ_*.png
+safe_roi_*.png
+*2025-11-23 15-25-04.png
+*2025-11-23 16-54-45.png
