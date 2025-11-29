@@ -97,6 +97,8 @@ class MaixSenseController:
         self.current_unit = 0  # 當前量化單位
         self.audio = AudioFeedback()
         self.vertical_offset_mm = 530.0  # 盲人胸口到鏡頭的垂直高度 (53cm)
+        # 深度模組實測最短 60cm，水平距離約 28~30cm，略放寬至 30cm
+        self.too_close_horizontal_threshold_mm = 300.0
         self._position_file_warning_emitted = False  # 避免重複噴太多權限警告
         
         # TCP 連線設定
@@ -533,7 +535,7 @@ class MaixSenseController:
             # 根據實際測試調整，例如：30公分到2.5公尺。
             # 靠近時可以調低MAX_DIST_MM, 遠離時可以調高
             MIN_DIST_MM = 500.0  # 提高最小距離，排除太近的雜訊 (例如手靠近鏡頭)
-            MAX_DIST_MM = 1200.0 # 最大偵測距離 1.2公尺
+            MAX_DIST_MM = 1600.0 # 從第二版沿用距離範圍，放寬可偵測上限
 
             # 2. 創建二進制遮罩 (有效距離內的像素)
             mask = cv2.inRange(distance_image, MIN_DIST_MM, MAX_DIST_MM)
@@ -631,7 +633,7 @@ class MaixSenseController:
             raw_display = cv2.normalize(raw_flipped, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
             
             # 對距離圖像進行特殊處理以匹配 LCD 顯示
-            valid_mask = (distance_flipped > 0) & (distance_flipped < 2000)
+            valid_mask = (distance_flipped > 0) & (distance_flipped < 2500)
             
             processed_distance = distance_flipped.copy()
             processed_distance[~valid_mask] = 0
@@ -680,7 +682,10 @@ class MaixSenseController:
                     horizontal_distance = 0.0
                 
                 # === 判斷狀態（優先級：太近 > 太遠 > 超出範圍 > 太左/太右 > 正常）===
-                if person_distance <= self.vertical_offset_mm:
+                # 僅當角度位於 -20°~+20° 開放區間時視為正常
+                is_angle_normal = LEFT_WARNING < cx < RIGHT_WARNING
+                is_too_close_distance = horizontal_distance <= self.too_close_horizontal_threshold_mm
+                if person_distance <= self.vertical_offset_mm or is_too_close_distance:
                     distance_status = "TOO_CLOSE"
                 elif person_distance > MAX_DIST_THRESHOLD:
                     distance_status = "TOO_FAR"
@@ -732,11 +737,16 @@ class MaixSenseController:
                 if distance_status == "TOO_CLOSE":
                     guide_text = "⚠️ TOO CLOSE! DANGER ⚠️"
                     guide_color = (0, 0, 255)
+                    self.send_tts_command("向後移動")
                 
                 elif distance_status == "TOO_FAR":
                     guide_text = "⚠️ OUT OF RANGE! Move Forward"
                     guide_color = (0, 0, 255)
                     self.audio.beep(frequency=2500, duration=LONG_BEEP, channel='both', gap=LONG_GAP)
+                    if is_angle_normal:
+                        self.send_tts_command("向前移動")
+                    elif RIGHT_WARNING <= cx < RIGHT_LIMIT:
+                        self.send_tts_command("向前移動再向左移動")
                 
                 elif distance_status == "OUT_OF_RANGE_LEFT":
                     guide_text = "⚠️ OUT OF RANGE! Move Left <<<"  # 修正：畫面左側要往左移
@@ -809,9 +819,9 @@ class MaixSenseController:
                 
                 # 7. 狀態文字
                 if distance_status == "TOO_CLOSE":
-                    status_text = "TOO CLOSE!"
+                    status_text = "TOO CLOSE"
                 elif distance_status == "TOO_FAR":
-                    status_text = "TOO FAR!"
+                    status_text = "TOO FAR"
                 elif distance_status == "OUT_OF_RANGE_LEFT":
                     status_text = "OUT OF RANGE (LEFT)"
                 elif distance_status == "OUT_OF_RANGE_RIGHT":
