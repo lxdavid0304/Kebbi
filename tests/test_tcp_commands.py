@@ -4,9 +4,16 @@
 用於確認機器人是否能正確接收並執行命令
 """
 
+import sys
+from pathlib import Path
+import time
+
+if __package__ in (None, ""):
+    # Allow running the script directly via `python tests/test_tcp_commands.py`
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from realsense_planner import config as cfg
 from realsense_planner.robot_tcp import RobotTCPClient
-import time
 
 def test_commands():
     print(f"連線到 {cfg.ROBOT_TCP_IP}:{cfg.ROBOT_TCP_PORT}")

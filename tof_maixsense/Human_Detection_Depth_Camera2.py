@@ -750,6 +750,8 @@ class MaixSenseController:
                 # 6. 準備顯示文字
                 dist_text = f"Dist: {person_distance:.0f}mm"
                 angle_text = f"Angle: {current_angle:+.1f}°"
+                vertical_text = f"Height: {self.vertical_offset_mm:.0f}mm"
+                horizontal_text = f"Horiz: {horizontal_distance:.0f}mm"
                 
                 # 7. 狀態文字
                 if distance_status == "TOO_CLOSE":
@@ -771,11 +773,23 @@ class MaixSenseController:
                 # 距離：左上角
                 cv2.putText(distance_resized, dist_text, (10, 30),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, display_color, 2)
+                cv2.putText(distance_resized, vertical_text, (10, 60),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, display_color, 2)
                 
                 # 角度：右上角
                 angle_text_size = cv2.getTextSize(angle_text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
                 cv2.putText(distance_resized, angle_text, (target_size - angle_text_size[0] - 10, 30),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, display_color, 2)
+                horizontal_text_size = cv2.getTextSize(horizontal_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
+                cv2.putText(
+                    distance_resized,
+                    horizontal_text,
+                    (target_size - horizontal_text_size[0] - 10, 60),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    display_color,
+                    2,
+                )
                 
                 # 狀態：正下方中央
                 status_text_size = cv2.getTextSize(status_text, cv2.FONT_HERSHEY_SIMPLEX, 0.9, 2)[0]

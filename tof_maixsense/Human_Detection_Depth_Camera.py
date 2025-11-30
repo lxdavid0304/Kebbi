@@ -12,21 +12,18 @@ import struct
 import sys
 import threading
 from pathlib import Path
+import math
 import cv2
 import numpy as np
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Dict
 import traceback
-import socket
-
 try:
     from tof_maixsense import state
-    from tof_maixsense.state import PersonRangeReading
 except ModuleNotFoundError:
     repo_root = Path(__file__).resolve().parent.parent
     if str(repo_root) not in sys.path:
         sys.path.insert(0, str(repo_root))
     from tof_maixsense import state
-    from tof_maixsense.state import PersonRangeReading
 #import sounddevice as sd
 
 class AudioFeedback:
@@ -82,13 +79,14 @@ class MaixSenseController:
     def __init__(self, port: str = "/dev/ttyUSB0", baudrate: int = 57600,
                  tcp_host: str = "172.20.10.8", tcp_port: int = 8888):
         """
-        初始化 MaixSense 控制器
+        初始化 MaixSense 控制器。TCP 參數僅為保留欄位，實際語音轉送交由
+        RealSense 端的 state 橋接模組負責。
         
         Args:
             port: 串口設備路徑
             baudrate: 波特率
-            tcp_host: 凱比機器人的 IP 位址
-            tcp_port: 凱比機器人的 TCP 端口
+            tcp_host: 保留參數，無直接使用
+            tcp_port: 保留參數，無直接使用
         """
         self.port = port
         self.baudrate = baudrate
@@ -101,20 +99,23 @@ class MaixSenseController:
         self.too_close_horizontal_threshold_mm = 300.0
         self._position_file_warning_emitted = False  # 避免重複噴太多權限警告
         
-        # TCP 連線設定
-        self.tcp_host = tcp_host
-        self.tcp_port = tcp_port
-        self.tcp_socket: Optional[socket.socket] = None
-        self.tcp_connected = False
-        self.last_command_time = 0  # 記錄上次發送指令的時間
+        # 透過 state.py 轉交語音指令的節流控制
+        self.last_command_time = 0.0
         self.command_cooldown = 2.0  # 指令冷卻時間（秒），避免重複發送
+        self.state_publish_interval = 0.25  # 偵測佇列發佈頻率（秒）
+        self._last_detection_publish_ts = 0.0
+        self._stabilized_detection: Optional[Dict[str, float]] = None
+        self._missing_detection_frames = 0
+        self.detection_hold_frames = 8  # 允許瞬時遺失的幀數（加長以減少閃爍）
+        self.detection_smoothing_alpha = 0.25  # 低通濾波係數，數值越小越平滑
+        self.detection_pixel_jump_limit = 6.0  # 單幀允許的像素位移
+        self.detection_size_jump_limit = 8.0  # 單幀允許的寬高變化
+        self.distance_jump_limit_mm = 80.0  # 單幀允許的距離跳動
+        self._last_voice_signature: Optional[Tuple[str, str]] = None
         
     def connect(self) -> bool:
         """
-        連接到串口設備和 TCP 伺服器
-        
-        Returns:
-            bool: 連接是否成功
+        連接到串口設備並初始化感知模組。
         """
         try:
             self.serial_conn = serial.Serial(
@@ -127,113 +128,74 @@ class MaixSenseController:
             )
             self.send_at_command("AT+BAUD=57600")
             print(f"成功連接到 {self.port}，波特率：{self.baudrate}")
-            
-            # 嘗試連接到 TCP 伺服器
-            self.connect_tcp()
-            
             return True
         except serial.SerialException as e:
             print(f"連接串口失敗：{e}")
             return False
     
-    def connect_tcp(self) -> bool:
-        """
-        連接到凱比機器人的 TCP 伺服器
-        
-        Returns:
-            bool: 連接是否成功
-        """
-        try:
-            self.tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            # 設定 TCP 參數以保持連線
-            self.tcp_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            self.tcp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-            self.tcp_socket.settimeout(5.0)
-            self.tcp_socket.connect((self.tcp_host, self.tcp_port))
-            self.tcp_socket.settimeout(None)
-            self.tcp_connected = True
-            print(f"✅ 成功連接到凱比機器人 TCP: {self.tcp_host}:{self.tcp_port}")
-            return True
-        except Exception as e:
-            print(f"⚠️ 連接凱比機器人 TCP 失敗：{e}")
-            self.tcp_connected = False
+    def _queue_voice_event(self, text: str, *, severity: str = "info") -> bool:
+        """寫入語音事件，依嚴重度決定節流，並避免重複念同一句話。"""
+
+        if not text:
             return False
-    
-    def send_tts_command(self, text: str) -> bool:
-        """
-        發送 TTS 語音指令給凱比機器人
-        
-        Args:
-            text: 要唸出的文字
-            
-        Returns:
-            bool: 發送是否成功
-        """
-        # 檢查冷卻時間，避免頻繁發送
+        signature = (severity, text)
+        if self._last_voice_signature == signature:
+            return False
+
         current_time = time.time()
-        if current_time - self.last_command_time < self.command_cooldown:
+        if severity == "critical":
+            min_interval = 0.0
+        elif severity == "warning":
+            min_interval = 1.0
+        else:
+            min_interval = self.command_cooldown
+
+        if (current_time - self.last_command_time) < min_interval:
             return False
-        
-        if not self.tcp_connected or not self.tcp_socket:
-            print("⚠️ TCP 未連線，嘗試重新連接...")
-            if not self.connect_tcp():
-                return False
-        
+
         try:
-            # 發送 TTS 指令，格式：tts:文字內容\n
-            command = f"tts:{text}\n"
-            self.tcp_socket.sendall(command.encode('utf-8'))
-            # 確保數據立即發送（雖然已設定 TCP_NODELAY）
-            try:
-                self.tcp_socket.send(b'')  # Flush
-            except:
-                pass
-            print(f"📢 發送語音指令: {text}")
+            state.append_voice_event(text, timestamp=current_time)
             self.last_command_time = current_time
+            self._last_voice_signature = signature
+            print(f"📢 排入語音指令: {text}")
             return True
-        except BrokenPipeError:
-            print(f"⚠️ TCP 連線已斷開，嘗試重新連接...")
-            self.tcp_connected = False
-            try:
-                self.tcp_socket.close()
-            except:
-                pass
-            self.tcp_socket = None
-            # 立即重試一次
-            if self.connect_tcp():
-                try:
-                    command = f"tts:{text}\n"
-                    self.tcp_socket.sendall(command.encode('utf-8'))
-                    print(f"📢 重新發送語音指令: {text}")
-                    self.last_command_time = current_time
-                    return True
-                except:
-                    pass
+        except Exception as exc:
+            print(f"⚠️ 無法寫入語音事件：{exc}")
             return False
-        except Exception as e:
-            print(f"❌ 發送 TCP 指令失敗：{e}")
-            self.tcp_connected = False
-            try:
-                self.tcp_socket.close()
-            except:
-                pass
-            self.tcp_socket = None
-            return False
-    
+
+    def _publish_detection_state(
+        self,
+        horizontal_distance_mm: float,
+        angle_deg: float,
+        status: str,
+        voice_text: Optional[str],
+    ) -> None:
+        now = time.time()
+        if now - self._last_detection_publish_ts < self.state_publish_interval:
+            return
+        try:
+            state.append_detection(
+                distance_m=horizontal_distance_mm / 1000.0,
+                angle_deg=angle_deg,
+                tts_text=voice_text,
+                status=status,
+                timestamp=now,
+            )
+            self._last_detection_publish_ts = now
+        except Exception as exc:
+            print(f"⚠️ 無法寫入偵測資料：{exc}")
+
+    def _mark_no_detection(self) -> None:
+        try:
+            state.update_meta(last_detection="none", last_detection_status="none")
+        except Exception as exc:
+            print(f"⚠️ 無法更新偵測狀態：{exc}")
+
     def disconnect(self):
-        """斷開串口和 TCP 連接"""
+        """斷開串口連接"""
         if self.serial_conn and self.serial_conn.is_open:
             self.serial_conn.close()
             print("串口連接已斷開")
-        
-        if self.tcp_socket:
-            try:
-                self.tcp_socket.close()
-                print("TCP 連接已斷開")
-            except:
-                pass
-            self.tcp_socket = None
-            self.tcp_connected = False
 
     def _write_position_file(self, horizontal_distance: float, person_distance: float,
                               distance_status: str, is_too_left: int, is_too_right: int) -> None:
@@ -537,8 +499,9 @@ class MaixSenseController:
             MIN_DIST_MM = 500.0  # 提高最小距離，排除太近的雜訊 (例如手靠近鏡頭)
             MAX_DIST_MM = 1600.0 # 從第二版沿用距離範圍，放寬可偵測上限
 
-            # 2. 創建二進制遮罩 (有效距離內的像素)
-            mask = cv2.inRange(distance_image, MIN_DIST_MM, MAX_DIST_MM)
+            # 2. 透過模糊降低單幀雜訊，再建立二值遮罩
+            smoothed_distance = cv2.GaussianBlur(distance_image, (5, 5), 0)
+            mask = cv2.inRange(smoothed_distance, MIN_DIST_MM, MAX_DIST_MM)
             
             # --- 3. 清理遮罩 (形態學操作，增加迭代次數，增強效果) ---
             kernel = np.ones((5, 5), np.uint8)
@@ -619,6 +582,51 @@ class MaixSenseController:
         except Exception as e:
             print(f"尋找人物時出錯: {e}")
             return None
+
+    def _update_stabilized_detection(
+        self, detection: Optional[Tuple[int, int, int, int, int, int, float, float]]
+    ) -> Optional[Dict[str, float]]:
+        """
+        對偵測結果做簡單的時間濾波，降低畫面閃爍。
+        """
+        if detection is None:
+            if self._stabilized_detection is None:
+                return None
+            self._missing_detection_frames += 1
+            if self._missing_detection_frames > self.detection_hold_frames:
+                self._stabilized_detection = None
+                self._missing_detection_frames = 0
+                return None
+            return self._stabilized_detection
+
+        self._missing_detection_frames = 0
+        keys = ("x", "y", "w", "h", "cx", "cy", "person_distance", "contour_area")
+        new_values = {key: float(val) for key, val in zip(keys, detection)}
+
+        if self._stabilized_detection is None:
+            self._stabilized_detection = new_values
+        else:
+            alpha = self.detection_smoothing_alpha
+            for key in keys:
+                previous = self._stabilized_detection[key]
+                blended = alpha * new_values[key] + (1 - alpha) * previous
+
+                limit: Optional[float] = None
+                if key in {"x", "y", "cx", "cy"}:
+                    limit = self.detection_pixel_jump_limit
+                elif key in {"w", "h"}:
+                    limit = self.detection_size_jump_limit
+                elif key == "person_distance":
+                    limit = self.distance_jump_limit_mm
+
+                if limit is not None:
+                    delta = blended - previous
+                    if abs(delta) > limit:
+                        blended = previous + math.copysign(limit, delta)
+
+                self._stabilized_detection[key] = blended
+
+        return self._stabilized_detection
     
     def display_images(self, raw_image: np.ndarray, distance_image: np.ndarray):
         """
@@ -657,6 +665,7 @@ class MaixSenseController:
             
             # --- 人物偵測與位置導引 ---
             detection_result = self.find_person(distance_image)
+            stabilized_detection = self._update_stabilized_detection(detection_result)
             
             # 定義閾值
             # 視野60度 (-30° ~ +30°)，100像素寬
@@ -667,9 +676,17 @@ class MaixSenseController:
             RIGHT_LIMIT = 100      # +30度極限 (超出偵測範圍)
             MAX_DIST_THRESHOLD = 1200.0 # 最大距離 1.2 公尺 (1200mm)
             
-            if detection_result:
-                import math
-                x, y, w, h, cx, cy, person_distance, contour_area = detection_result
+            if stabilized_detection:
+                x = int(round(stabilized_detection["x"]))
+                y = int(round(stabilized_detection["y"]))
+                w = int(round(stabilized_detection["w"]))
+                h = int(round(stabilized_detection["h"]))
+                cx = int(round(stabilized_detection["cx"]))
+                cy = int(round(stabilized_detection["cy"]))
+                person_distance = float(stabilized_detection["person_distance"])
+                contour_area = float(stabilized_detection["contour_area"])
+                voice_text: Optional[str] = None
+                voice_severity = "info"
                 
                 # === 使用畢氏定理計算水平距離 ===
                 if person_distance > self.vertical_offset_mm:
@@ -737,46 +754,57 @@ class MaixSenseController:
                 if distance_status == "TOO_CLOSE":
                     guide_text = "⚠️ TOO CLOSE! DANGER ⚠️"
                     guide_color = (0, 0, 255)
-                    self.send_tts_command("向後移動")
+                    voice_text = "向後移動"
+                    voice_severity = "critical"
                 
                 elif distance_status == "TOO_FAR":
                     guide_text = "⚠️ OUT OF RANGE! Move Forward"
                     guide_color = (0, 0, 255)
                     self.audio.beep(frequency=2500, duration=LONG_BEEP, channel='both', gap=LONG_GAP)
+                    voice_severity = "critical"
                     if is_angle_normal:
-                        self.send_tts_command("向前移動")
+                        voice_text = "向前移動"
                     elif RIGHT_WARNING <= cx < RIGHT_LIMIT:
-                        self.send_tts_command("向前移動再向左移動")
+                        voice_text = "向前移動再向左移動"
                 
                 elif distance_status == "OUT_OF_RANGE_LEFT":
                     guide_text = "⚠️ OUT OF RANGE! Move Left <<<"  # 修正：畫面左側要往左移
                     guide_color = (0, 0, 255)
                     is_too_left = 1
-                    self.send_tts_command("向左移動")
+                    voice_text = "向左移動"
+                    voice_severity = "critical"
                 
                 elif distance_status == "OUT_OF_RANGE_RIGHT":
                     guide_text = "⚠️ OUT OF RANGE! Move Right >>>"  # 修正：畫面右側要往右移
                     guide_color = (0, 0, 255)
                     is_too_right = 1
-                    self.send_tts_command("向右移動")
+                    voice_text = "向右移動"
+                    voice_severity = "critical"
                 
                 elif distance_status == "TOO_LEFT":
                     guide_text = "Move Left <<<"  # 修正：畫面左側要往左移
                     guide_color = (255, 165, 0)  # 橘色提醒
                     is_too_left = 1
                     self.audio.beep(frequency=BEEP_FREQ, duration=SHORT_BEEP, channel='left', gap=SHORT_GAP)
-                    self.send_tts_command("向左移動")
+                    voice_text = "向左移動"
+                    voice_severity = "warning"
                 
                 elif distance_status == "TOO_RIGHT":
                     guide_text = "Move Right >>>"  # 修正：畫面右側要往右移
                     guide_color = (255, 165, 0)  # 橘色提醒
                     is_too_right = 1
                     self.audio.beep(frequency=BEEP_FREQ, duration=SHORT_BEEP, channel='right', gap=SHORT_GAP)
-                    self.send_tts_command("向右移動")
+                    voice_text = "向右移動"
+                    voice_severity = "warning"
                 
                 else:  # NORMAL
                     guide_text = "✓ Position Perfect!"
                     guide_color = (0, 255, 0)
+
+                if voice_text:
+                    self._queue_voice_event(voice_text, severity=voice_severity)
+                else:
+                    self._last_voice_signature = None
                 
                 # 寫入檔案 (使用水平距離)
                 self._write_position_file(
@@ -791,15 +819,11 @@ class MaixSenseController:
                 # 但視覺上：畫面右側應該是正角度，左側應該是負角度
                 current_angle = (50 - cx) * 0.6  # 反轉：右邊為正，左邊為負
                 
-                # 將最新的人員位置發布到 state 供其他模組讀取
-                state.publish_person_range(
-                    PersonRangeReading(
-                        distance_m=person_distance / 1000.0,
-                        angle_deg=current_angle,
-                        bbox=(x, y, w, h),
-                        area=contour_area,
-                        timestamp=time.time(),
-                    )
+                self._publish_detection_state(
+                    horizontal_distance,
+                    current_angle,
+                    distance_status,
+                    voice_text,
                 )
                 
                 # 5. 根據狀態決定顯示顏色
@@ -816,6 +840,8 @@ class MaixSenseController:
                 # 6. 準備顯示文字
                 dist_text = f"Dist: {person_distance:.0f}mm"
                 angle_text = f"Angle: {current_angle:+.1f}°"
+                vertical_text = f"Height: {self.vertical_offset_mm:.0f}mm"
+                horizontal_text = f"Horiz: {horizontal_distance:.0f}mm"
                 
                 # 7. 狀態文字
                 if distance_status == "TOO_CLOSE":
@@ -837,11 +863,23 @@ class MaixSenseController:
                 # 距離：左上角
                 cv2.putText(distance_resized, dist_text, (10, 30),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, display_color, 2)
+                cv2.putText(distance_resized, vertical_text, (10, 60),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, display_color, 2)
                 
                 # 角度：右上角
                 angle_text_size = cv2.getTextSize(angle_text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
                 cv2.putText(distance_resized, angle_text, (target_size - angle_text_size[0] - 10, 30),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, display_color, 2)
+                horizontal_text_size = cv2.getTextSize(horizontal_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
+                cv2.putText(
+                    distance_resized,
+                    horizontal_text,
+                    (target_size - horizontal_text_size[0] - 10, 60),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    display_color,
+                    2,
+                )
                 
                 # 狀態：正下方中央
                 status_text_size = cv2.getTextSize(status_text, cv2.FONT_HERSHEY_SIMPLEX, 0.9, 2)[0]
@@ -852,7 +890,7 @@ class MaixSenseController:
                 # 原本的底部藍色導引文字已刪除，改用上方的紅/橘/綠色狀態顯示
                             
             else:
-                state.clear_person_range()
+                self._mark_no_detection()
                 # 沒偵測到人
                 raw_resized_bgr = cv2.cvtColor(raw_resized, cv2.COLOR_GRAY2BGR)
                 cv2.putText(distance_resized, "No Person Detected", (10, 390), 

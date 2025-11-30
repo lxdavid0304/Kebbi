@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 import time
+from typing import Any, Dict, List, Optional
 
 import _bootstrap  # noqa: F401
 import cv2
@@ -25,7 +26,7 @@ from realsense_planner.sensors import (
     make_T_local_cam,
     transform_pcd,
 )
-from tof_maixsense.state import get_latest_person_range
+from tof_maixsense import state
 
 # ROI (robot frame)
 ROI_X = (-1.5, 1.5)
@@ -52,6 +53,11 @@ DEPTH_TRUNC = 3.5
 CAM_YAW_DEG = 0.0
 CAM_HEIGHT = 0.06
 CAM_PITCH_DEG = -20.0
+
+# Voice command handling
+VOICE_EVENT_STALE_SEC = 3.0  # drop stale events to keep responses snappy
+
+_last_voice_command: Optional[str] = None  # track to avoid repeating the same advice
 
 
 def _crop_roi(pcd: o3d.geometry.PointCloud) -> o3d.geometry.PointCloud:
@@ -157,45 +163,91 @@ def _draw_grid(img: np.ndarray, m_per_major: float = 0.5) -> None:
             cv2.line(img, (0, row), (w - 1, row), major, 1)
         y += m_per_major
 
-def _draw_blind_person(world_rgb: np.ndarray, pose_xy_theta: tuple[float, float, float]) -> None:
-    """
-    從 state.py 讀取最新盲人距離＋角度，
-    並在世界地圖上、機器人後方畫出代表盲人的紅色質點。
-    """
-    reading = get_latest_person_range(max_age=0.5)  # 只接受 0.5 秒內的新資料
-    if reading is None:
-        return  # 沒有可靠資料就不畫
+def _draw_blind_person(
+    world_rgb: np.ndarray,
+    pose_xy_theta: tuple[float, float, float],
+    detection: Optional[Dict[str, Any]],
+) -> None:
+    """在世界地圖上畫出盲人的估計位置。"""
 
-    # 機器人在世界座標中的位置與朝向
+    if not detection:
+        return
+    distance_m = detection.get("distance")
+    angle_deg = detection.get("angle")
+    if distance_m is None or angle_deg is None:
+        return
+
     robot_x, robot_y, robot_yaw_deg = pose_xy_theta
 
-    d = reading.distance_m       # 水平距離（公尺）
-    angle_deg = reading.angle_deg  # 右正左負，相對機器人
-
-    # ---- 從「距離＋角度」轉成世界座標 ----
-    # 假設：
-    #   - robot_yaw_deg 是機器人「面向前方」的角度（世界座標下）
-    #   - 盲人是「在機器人後方」，angle_deg=0 表示正後方
-    #   - angle_deg > 0 表示偏向機器人右後方，angle_deg < 0 表示偏左後方
-    #
-    # 先算出「正後方」方向 = robot_yaw + 180°
     robot_yaw_rad = math.radians(robot_yaw_deg)
-    base_dir_rad = robot_yaw_rad + math.pi  # 後方方向
-
-    # angle_deg 右正左負，我們讓正值往右偏，就是從 base_dir_rad 順時針旋轉，因此要減
+    base_dir_rad = robot_yaw_rad + math.pi
     phi_rad = base_dir_rad - math.radians(angle_deg)
 
-    # 盲人在世界座標中的位置
-    human_x = robot_x + d * math.cos(phi_rad)
-    human_y = robot_y + d * math.sin(phi_rad)
+    human_x = robot_x + distance_m * math.cos(phi_rad)
+    human_y = robot_y + distance_m * math.sin(phi_rad)
 
-    # ---- 世界座標 → grid(row, col) ----
+    # 將盲人位置對稱於 y=x，以符合世界地圖座標系
+    human_x, human_y = human_y, human_x
+
     col = int(round((human_x - WORLD_X[0]) / CELL_M))
     row = int(round((WORLD_Y[1] - human_y) / CELL_M))
 
     if 0 <= row < GRID_H and 0 <= col < GRID_W:
-        # 畫一個紅色小圓點代表盲人
         cv2.circle(world_rgb, (col, row), 3, (0, 0, 255), -1)
+
+
+def _select_detection_entry(snapshot: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    meta = snapshot.get("meta") or {}
+    detections: List[Dict[str, Any]] = snapshot.get("detections") or []
+    last_detection_flag = meta.get("last_detection")
+    if detections and last_detection_flag != "none":
+        return detections[-1]
+    last_seen = meta.get("last_seen_pose")
+    if isinstance(last_seen, dict):
+        return {
+            "distance": last_seen.get("distance"),
+            "angle": last_seen.get("angle"),
+            "status": meta.get("last_detection_status", "unknown"),
+            "tts_text": None,
+            "timestamp": last_seen.get("timestamp", 0.0),
+        }
+    if detections:
+        return detections[-1]
+    return None
+
+
+def _deliver_voice_events(tcp: Optional[RobotTCPClient], voice_events: List[Dict[str, Any]]) -> None:
+    global _last_voice_command
+
+    if not tcp or not tcp.connected() or not voice_events:
+        return
+
+    now = time.time()
+    for event in sorted(voice_events, key=lambda e: e.get("event_id", 0)):
+        command = event.get("command")
+        event_id = event.get("event_id")
+        if not command or event_id is None:
+            continue
+
+        event_ts = float(event.get("timestamp") or now)
+        if VOICE_EVENT_STALE_SEC and (now - event_ts) > VOICE_EVENT_STALE_SEC:
+            state.mark_voice_processed(event_id)
+            print(f"[voice] 丟棄過期語音事件 {event_id}: {command}")
+            continue
+
+        if _last_voice_command == command:
+            state.mark_voice_processed(event_id)
+            print(f"[voice] 忽略重複語音事件 {event_id}: {command}")
+            continue
+
+        try:
+            tcp.send_line(f"tts:{command}")
+            state.mark_voice_processed(event_id)
+            _last_voice_command = command
+            print(f"[voice] 已轉送事件 {event_id}: {command}")
+        except Exception as exc:
+            print(f"[voice] 傳送語音事件 {event_id} 失敗：{exc}")
+            break
 
 
 def _init_tcp() -> RobotTCPClient | None:
@@ -234,6 +286,8 @@ def detect_human_position():
 def main():
     # 初始化單一 TCP 客戶端（包含命令和里程計功能）
     tcp = _init_tcp()
+    last_tcp_attempt = time.time()
+    tcp_status_cache: Optional[str] = None
 
     pipeline, profile, align, depth_scale = auto_start_realsense()
     T_local_cam = make_T_local_cam(
@@ -246,6 +300,35 @@ def main():
 
     try:
         while True:
+            if tcp is None and (time.time() - last_tcp_attempt) > 5.0:
+                tcp = _init_tcp()
+                last_tcp_attempt = time.time()
+
+            snapshot: Dict[str, Any] = {"detections": [], "voice_events": [], "meta": {}}
+            try:
+                snapshot = state.read_pending_events()
+            except Exception as exc:
+                print(f"[state] 讀取共享狀態失敗：{exc}")
+            detection_entry = _select_detection_entry(snapshot)
+            voice_events = snapshot.get("voice_events", [])
+            meta = snapshot.get("meta", {})
+
+            if voice_events:
+                _deliver_voice_events(tcp, voice_events)
+
+            if tcp is None:
+                tcp_status_value = "not_ready"
+            elif tcp.connected():
+                tcp_status_value = "connected"
+            else:
+                tcp_status_value = "connecting"
+            if tcp_status_value != tcp_status_cache:
+                try:
+                    state.update_meta(tcp_status=tcp_status_value)
+                except Exception as exc:
+                    print(f"[state] 無法更新 TCP 狀態：{exc}")
+                tcp_status_cache = tcp_status_value
+
             frames = pipeline.wait_for_frames()
             if align is not None:
                 frames = align.process(frames)
@@ -295,6 +378,14 @@ def main():
             else:
                 print(f"[odom] no data yet, using default pose: {pose[0]:.2f}, {pose[1]:.2f}, {pose[2]:.1f}")
 
+            try:
+                state.update_odom(
+                    position={"x": pose[0], "y": pose[1]},
+                    orientation={"yaw": pose[2]},
+                )
+            except Exception as exc:
+                print(f"[state] 無法寫入里程計：{exc}")
+
             world = np.full((GRID_H, GRID_W), 255, np.uint8)
             _integrate_roi_into_world(occ_roi, pose, world)
 
@@ -315,8 +406,8 @@ def main():
                 fan_deg=cfg.BACKWARD_FAN_DEG,
             )
 
-            # ⭐ 新增：從 state.py 讀盲人距離＋角度，畫出紅色質點
-            _draw_blind_person(world_rgb, pose)
+            # ⭐ 使用 state.py 的資料，在世界地圖上標示盲人位置
+            _draw_blind_person(world_rgb, pose, detection_entry)
 
             # 畫機器人位置（黃色小方塊）
             if 0 <= sensor_rc[0] < GRID_H and 0 <= sensor_rc[1] < GRID_W:
@@ -332,22 +423,18 @@ def main():
             _draw_grid(world_rgb)
             display = cv2.resize(world_rgb, (GRID_W * 8, GRID_H * 8), interpolation=cv2.INTER_NEAREST)
             
-            # 顯示連線狀態
             status_text = []
-            
-            # TCP 連線狀態
+
             if tcp and tcp.connected():
                 status_text.append(("TCP: connected", (0, 255, 0)))
             elif tcp:
                 status_text.append(("TCP: connecting...", (0, 165, 255)))
             else:
                 status_text.append(("TCP: not ready", (128, 128, 128)))
-            
-            # 里程計數據狀態
+
             if tcp:
                 has_data = tcp.has_odometry_data()
                 socket_connected = tcp.connected()
-                
                 if has_data:
                     if socket_connected:
                         status_text.append(("odom: connected", (0, 255, 0)))
@@ -357,9 +444,16 @@ def main():
                     status_text.append(("odom: use default", (128, 128, 128)))
             else:
                 status_text.append(("odom: not ready", (128, 128, 128)))
-            
-            # 位姿資訊
+
             status_text.append((f"position: ({pose[0]:.2f}, {pose[1]:.2f}) angle: {pose[2]:.0f}°", (100, 100, 100)))
+
+            det_status = meta.get("last_detection_status", "unknown") if isinstance(meta, dict) else "unknown"
+            if detection_entry and detection_entry.get("status"):
+                det_status = detection_entry.get("status")
+            det_color = (0, 255, 0) if det_status in ("NORMAL", "none") else (0, 0, 255)
+            status_text.append((f"detection: {det_status}", det_color))
+            voice_color = (0, 255, 0) if not voice_events else (0, 165, 255)
+            status_text.append((f"voice queue: {len(voice_events)}", voice_color))
             
             # 在畫面左上角顯示狀態
             y_offset = 20
