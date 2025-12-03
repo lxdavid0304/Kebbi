@@ -15,10 +15,15 @@ globals().update({name: getattr(cfg, name) for name in cfg.__all__})
 
 @dataclass
 class RobotPose:
-    """機器人位姿資訊"""
+    """機器人位姿資訊（x/y：公尺，heading：度）"""
     x_m: float = 0.0
     y_m: float = 0.0
-    heading_deg: float = 90.0  # 世界座標下，預設正前方為 +Y
+    heading_deg: float = 0.0  # 里程計座標下預設正前方為 +X
+
+
+def _normalize_heading_deg(angle: float) -> float:
+    """Wrap heading to [0, 360)。"""
+    return angle % 360.0
 
 
 class RobotTCPClient:
@@ -39,11 +44,7 @@ class RobotTCPClient:
         self._last_pong_ts = 0.0
         
         # 里程計位姿追踪（合併自 OdometryClient）
-        self._pose = RobotPose(
-            x_m=cfg.ROBOT_START[0],
-            y_m=cfg.ROBOT_START[1],
-            heading_deg=cfg.ROBOT_INIT_YAW_DEG
-        )
+        self._pose = RobotPose()
         self._pose_lock = threading.Lock()
         self._has_received_data = False  # 追蹤是否曾接收過里程計數據
         self.start_pos_x = 0.0
@@ -139,9 +140,9 @@ class RobotTCPClient:
                                         self.has_init_pos = True
                                         print(f"[tcp-odom] 初始位置設定: x={x}, y={y}, heading={heading}")
                                     with self._pose_lock:
-                                        self._pose.x_m = -(x - self.start_pos_x)
+                                        self._pose.x_m = x - self.start_pos_x
                                         self._pose.y_m = y - self.start_pos_y
-                                        self._pose.heading_deg = (heading - self.start_heading + 90) % 360
+                                        self._pose.heading_deg = _normalize_heading_deg(heading - self.start_heading)
                                         self._has_received_data = True
                                     print(f"[tcp-odom] 位姿更新: x={self._pose.x_m:.3f}, y={self._pose.y_m:.3f}, heading={self._pose.heading_deg:.1f}°")
                                 except ValueError as e:

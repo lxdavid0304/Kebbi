@@ -101,14 +101,14 @@ class MaixSenseController:
         
         # 透過 state.py 轉交語音指令的節流控制
         self.last_command_time = 0.0
-        self.command_cooldown = 2.0  # 指令冷卻時間（秒），避免重複發送
-        self.state_publish_interval = 0.25  # 偵測佇列發佈頻率（秒）
+        self.command_cooldown = 1.0  # 指令冷卻時間（秒），稍微放寬提高靈敏度
+        self.state_publish_interval = 0.2  # 偵測佇列發佈頻率（秒）
         self._last_detection_publish_ts = 0.0
         self._stabilized_detection: Optional[Dict[str, float]] = None
         self._missing_detection_frames = 0
-        self.detection_hold_frames = 8  # 允許瞬時遺失的幀數（加長以減少閃爍）
-        self.detection_smoothing_alpha = 0.25  # 低通濾波係數，數值越小越平滑
-        self.detection_pixel_jump_limit = 6.0  # 單幀允許的像素位移
+        self.detection_hold_frames = 4  # 允許瞬時遺失的幀數
+        self.detection_smoothing_alpha = 0.45  # 提高低通係數讓位移反應更快
+        self.detection_pixel_jump_limit = 12.0  # 單幀允許的像素位移
         self.detection_size_jump_limit = 8.0  # 單幀允許的寬高變化
         self.distance_jump_limit_mm = 80.0  # 單幀允許的距離跳動
         self._last_voice_signature: Optional[Tuple[str, str]] = None
@@ -139,18 +139,19 @@ class MaixSenseController:
         if not text:
             return False
         signature = (severity, text)
-        if self._last_voice_signature == signature:
-            return False
 
         current_time = time.time()
         if severity == "critical":
-            min_interval = 0.0
+            min_interval = 0.1
         elif severity == "warning":
-            min_interval = 1.0
+            min_interval = 0.5
         else:
             min_interval = self.command_cooldown
 
-        if (current_time - self.last_command_time) < min_interval:
+        elapsed = current_time - self.last_command_time
+        if elapsed < min_interval:
+            return False
+        if self._last_voice_signature == signature and elapsed < (min_interval * 1.5):
             return False
 
         try:
@@ -667,13 +668,10 @@ class MaixSenseController:
             detection_result = self.find_person(distance_image)
             stabilized_detection = self._update_stabilized_detection(detection_result)
             
-            # 定義閾值
-            # 視野60度 (-30° ~ +30°)，100像素寬
-            # 每像素 = 0.6度
-            LEFT_WARNING = 17      # -20度警告線 (像素17 = -20度)
-            RIGHT_WARNING = 83     # +20度警告線 (像素83 = +20度)
-            LEFT_LIMIT = 0         # -30度極限 (超出偵測範圍)
-            RIGHT_LIMIT = 100      # +30度極限 (超出偵測範圍)
+            # 定義閾值（視野約 60 度）
+            PIXEL_TO_DEG = 0.6
+            ANGLE_WARNING_DEG = 15.0
+            ANGLE_LIMIT_DEG = 30.0
             MAX_DIST_THRESHOLD = 1200.0 # 最大距離 1.2 公尺 (1200mm)
             
             if stabilized_detection:
@@ -699,23 +697,23 @@ class MaixSenseController:
                     horizontal_distance = 0.0
                 
                 # === 判斷狀態（優先級：太近 > 太遠 > 超出範圍 > 太左/太右 > 正常）===
-                # 僅當角度位於 -20°~+20° 開放區間時視為正常
-                is_angle_normal = LEFT_WARNING < cx < RIGHT_WARNING
+                angle_from_center = (cx - 50) * PIXEL_TO_DEG  # 右側為正，左側為負
+                is_angle_normal = abs(angle_from_center) < ANGLE_WARNING_DEG
                 is_too_close_distance = horizontal_distance <= self.too_close_horizontal_threshold_mm
                 if person_distance <= self.vertical_offset_mm or is_too_close_distance:
                     distance_status = "TOO_CLOSE"
                 elif person_distance > MAX_DIST_THRESHOLD:
                     distance_status = "TOO_FAR"
-                elif cx <= LEFT_LIMIT:
+                elif angle_from_center <= -ANGLE_LIMIT_DEG:
                     distance_status = "OUT_OF_RANGE_LEFT"  # 超出左側30度
-                elif cx >= RIGHT_LIMIT:
+                elif angle_from_center >= ANGLE_LIMIT_DEG:
                     distance_status = "OUT_OF_RANGE_RIGHT"  # 超出右側30度
-                elif cx < LEFT_WARNING:
-                    distance_status = "TOO_LEFT"  # 在-30度~-20度之間
-                elif cx > RIGHT_WARNING:
-                    distance_status = "TOO_RIGHT"  # 在+20度~+30度之間
+                elif angle_from_center <= -ANGLE_WARNING_DEG:
+                    distance_status = "TOO_LEFT"  # 在-30度~-15度之間
+                elif angle_from_center >= ANGLE_WARNING_DEG:
+                    distance_status = "TOO_RIGHT"  # 在+15度~+30度之間
                 else:
-                    distance_status = "NORMAL"  # 在-20度~+20度之間
+                    distance_status = "NORMAL"  # 在-15度~+15度之間
                 
                 # 在終端印出距離資訊
                 print("=" * 60)
@@ -764,36 +762,38 @@ class MaixSenseController:
                     voice_severity = "critical"
                     if is_angle_normal:
                         voice_text = "向前移動"
-                    elif RIGHT_WARNING <= cx < RIGHT_LIMIT:
+                    elif angle_from_center > 0:
                         voice_text = "向前移動再向左移動"
+                    else:
+                        voice_text = "向前移動再向右移動"
                 
                 elif distance_status == "OUT_OF_RANGE_LEFT":
-                    guide_text = "⚠️ OUT OF RANGE! Move Left <<<"  # 修正：畫面左側要往左移
+                    guide_text = "⚠️ OUT OF RANGE! Move Right >>>"  # 盲人在左側，指示往右移
                     guide_color = (0, 0, 255)
                     is_too_left = 1
-                    voice_text = "向左移動"
-                    voice_severity = "critical"
-                
-                elif distance_status == "OUT_OF_RANGE_RIGHT":
-                    guide_text = "⚠️ OUT OF RANGE! Move Right >>>"  # 修正：畫面右側要往右移
-                    guide_color = (0, 0, 255)
-                    is_too_right = 1
                     voice_text = "向右移動"
                     voice_severity = "critical"
                 
+                elif distance_status == "OUT_OF_RANGE_RIGHT":
+                    guide_text = "⚠️ OUT OF RANGE! Move Left <<<"  # 盲人在右側，指示往左移
+                    guide_color = (0, 0, 255)
+                    is_too_right = 1
+                    voice_text = "向左移動"
+                    voice_severity = "critical"
+                
                 elif distance_status == "TOO_LEFT":
-                    guide_text = "Move Left <<<"  # 修正：畫面左側要往左移
+                    guide_text = "Move Right >>>"  # 盲人在左側，指示往右移
                     guide_color = (255, 165, 0)  # 橘色提醒
                     is_too_left = 1
-                    self.audio.beep(frequency=BEEP_FREQ, duration=SHORT_BEEP, channel='left', gap=SHORT_GAP)
+                    self.audio.beep(frequency=BEEP_FREQ, duration=SHORT_BEEP, channel='right', gap=SHORT_GAP)
                     voice_text = "向左移動"
                     voice_severity = "warning"
                 
                 elif distance_status == "TOO_RIGHT":
-                    guide_text = "Move Right >>>"  # 修正：畫面右側要往右移
+                    guide_text = "Move Left <<<"  # 盲人在右側，指示往左移
                     guide_color = (255, 165, 0)  # 橘色提醒
                     is_too_right = 1
-                    self.audio.beep(frequency=BEEP_FREQ, duration=SHORT_BEEP, channel='right', gap=SHORT_GAP)
+                    self.audio.beep(frequency=BEEP_FREQ, duration=SHORT_BEEP, channel='left', gap=SHORT_GAP)
                     voice_text = "向右移動"
                     voice_severity = "warning"
                 
@@ -814,10 +814,8 @@ class MaixSenseController:
                     is_too_left=is_too_left,
                     is_too_right=is_too_right,
                 )
-                # 4. 計算當前角度（修正：右邊為正，左邊為負）
-                # cx範圍: 0-100，左邊0對應-30度，右邊100對應+30度
-                # 但視覺上：畫面右側應該是正角度，左側應該是負角度
-                current_angle = (50 - cx) * 0.6  # 反轉：右邊為正，左邊為負
+                # 4. 計算當前角度（照舊維持「左正右負」給後續模組使用）
+                current_angle = -angle_from_center
                 
                 self._publish_detection_state(
                     horizontal_distance,
@@ -853,33 +851,33 @@ class MaixSenseController:
                 elif distance_status == "OUT_OF_RANGE_RIGHT":
                     status_text = "OUT OF RANGE (RIGHT)"
                 elif distance_status == "TOO_LEFT":
-                    status_text = "Move Left"
+                    status_text = "TOO LEFT"
                 elif distance_status == "TOO_RIGHT":
-                    status_text = "Move Right"
+                    status_text = "TOO RIGHT"
                 else:  # NORMAL
                     status_text = "PERFECT"
                 
-                # 8. 繪製資訊到視窗固定位置
-                # 距離：左上角
-                cv2.putText(distance_resized, dist_text, (10, 30),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, display_color, 2)
-                cv2.putText(distance_resized, vertical_text, (10, 60),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, display_color, 2)
-                
-                # 角度：右上角
-                angle_text_size = cv2.getTextSize(angle_text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
-                cv2.putText(distance_resized, angle_text, (target_size - angle_text_size[0] - 10, 30),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, display_color, 2)
-                horizontal_text_size = cv2.getTextSize(horizontal_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
-                cv2.putText(
-                    distance_resized,
-                    horizontal_text,
-                    (target_size - horizontal_text_size[0] - 10, 60),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6,
-                    display_color,
-                    2,
-                )
+                # 8. 繪製資訊到視窗右上角（斜線距離、角度、垂直高度、水平距離）
+                info_texts = [
+                    (dist_text, 0.7),
+                    (angle_text, 0.7),
+                    (vertical_text, 0.6),
+                    (horizontal_text, 0.6),
+                ]
+                base_y = 30
+                line_step = 22
+                for idx, (text, scale) in enumerate(info_texts):
+                    text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, 2)[0]
+                    pos = (target_size - text_size[0] - 10, base_y + idx * line_step)
+                    cv2.putText(
+                        distance_resized,
+                        text,
+                        pos,
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        scale,
+                        display_color,
+                        2,
+                    )
                 
                 # 狀態：正下方中央
                 status_text_size = cv2.getTextSize(status_text, cv2.FONT_HERSHEY_SIMPLEX, 0.9, 2)[0]
@@ -910,9 +908,9 @@ class MaixSenseController:
             
             # 並排顯示
             combined = np.hstack([raw_with_title, distance_with_title])
-            cv2.imshow('MaixSense ToF - Position Guide', combined)
+            #cv2.imshow('MaixSense ToF - Position Guide', combined)
             
-            cv2.waitKey(1)
+            #cv2.waitKey(1)
             
         except Exception as e:
             print(f"顯示圖像時發生錯誤：{e}")

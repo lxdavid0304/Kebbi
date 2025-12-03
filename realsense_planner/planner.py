@@ -134,7 +134,8 @@ def astar_opt(
             base_g = g[r, c]
 
             for k in range(len(dirs)):
-                dr = int(dirs[k, 0]); dc = int(dirs[k, 1])
+                dr, dc = dirs[k]
+                dr = int(dr); dc = int(dc)
                 r2, c2 = r + dr, c + dc
                 if not (0 <= r2 < H and 0 <= c2 < W):
                     continue

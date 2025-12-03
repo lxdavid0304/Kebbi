@@ -387,8 +387,10 @@ def draw_backward_fan_reference(
     pts = [(cx, cy)]
     for deg in angles:
         rad = math.radians(deg)
+        # 角度系統：0°=前/+Y, 90°=左/+X（逆時針，北向為0）
         vx = math.sin(rad)
         vy = math.cos(rad)
+        # 圖像座標：Y軸向下，所以 vy>0（向前）對應 row 減小
         row = cy - (vy * radius_m) / y_res
         col = cx + (vx * radius_m) / x_res
         row = int(np.clip(round(row), 0, h - 1))

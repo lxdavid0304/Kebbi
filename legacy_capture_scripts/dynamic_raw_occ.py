@@ -17,6 +17,7 @@ import open3d as o3d
 
 from realsense_planner import config as cfg
 from realsense_planner.occupancy import draw_backward_fan_reference
+from realsense_planner.planner import world_yaw_deg_to_grid_heading
 from realsense_planner.sensors import (
     auto_start_realsense,
     build_o3d_intrinsic_from_frame,
@@ -24,10 +25,11 @@ from realsense_planner.sensors import (
     make_T_local_cam,
     transform_pcd,
 )
+from tof_maixsense import state
 
 ROI_X = (-1.5, 1.5)
 ROI_Y = (0.0, 3.0)
-Z_RANGE = (0.2, 1.0)  # align with single-frame tuning to抑制近距離地板
+Z_RANGE = (0.2, 0.5)  # align with single-frame tuning to抑制近距離地板
 
 WORLD_X = (-3.0, 3.0)
 WORLD_Y = (-3.0, 3.0)
@@ -43,6 +45,9 @@ DEPTH_TRUNC = 3.5
 CAM_YAW_DEG = 0.0
 CAM_HEIGHT = 0.06
 CAM_PITCH_DEG = -20.0
+
+ODOM_HEADING_REFRESH_SEC = 0.2
+ODOM_MAX_AGE_SEC = 1.0
 
 
 def _crop_roi(pcd: o3d.geometry.PointCloud) -> o3d.geometry.PointCloud:
@@ -111,6 +116,34 @@ def _draw_grid(img: np.ndarray, m_per_major: float = 0.5) -> None:
         y += m_per_major
 
 
+def _read_world_yaw_from_state(max_age_s: float) -> float | None:
+    """Return the freshest world-frame yaw (0=+X) from shared state if recent."""
+
+    try:
+        snapshot = state.load_state()
+    except Exception as exc:
+        print(f"[heading] 無法讀取里程計狀態：{exc}")
+        return None
+
+    odom = snapshot.get("odom") or {}
+    orient = odom.get("orientation") or {}
+    yaw = orient.get("yaw")
+    if yaw is None:
+        return None
+
+    try:
+        ts = float(odom.get("timestamp") or 0.0)
+    except Exception:
+        ts = 0.0
+    if max_age_s and max_age_s > 0.0:
+        if ts <= 0.0 or (time.time() - ts) > max_age_s:
+            return None
+    try:
+        return float(yaw)
+    except Exception:
+        return None
+
+
 def main():
     pipeline, profile, align, depth_scale = auto_start_realsense()
     print("Streaming raw occupancy. Press 'q' in window to exit.")
@@ -120,6 +153,10 @@ def main():
     sensor_rc = (robot_row, robot_col)
     x_res = (WORLD_X[1] - WORLD_X[0]) / float(GRID_W)
     y_res = (WORLD_Y[1] - WORLD_Y[0]) / float(GRID_H)
+    default_heading = world_yaw_deg_to_grid_heading(cfg.ROBOT_INIT_YAW_DEG)
+    robot_heading_deg = default_heading
+    heading_source = "default"
+    last_heading_refresh = 0.0
 
     try:
         while True:
@@ -169,11 +206,28 @@ def main():
 
             occ = _pcd_to_occ(pcd_roi)
 
+            now = time.time()
+            if (now - last_heading_refresh) >= ODOM_HEADING_REFRESH_SEC:
+                yaw_world = _read_world_yaw_from_state(ODOM_MAX_AGE_SEC)
+                if yaw_world is not None:
+                    robot_heading_deg = world_yaw_deg_to_grid_heading(yaw_world)
+                    if heading_source != "odometry":
+                        print(
+                            f"[heading] 使用里程計朝向：world_yaw={yaw_world:.1f}° -> grid={robot_heading_deg:.1f}°"
+                        )
+                        heading_source = "odometry"
+                else:
+                    robot_heading_deg = default_heading
+                    if heading_source != "default":
+                        print("[heading] 里程計朝向過期或缺失，改用預設方向")
+                        heading_source = "default"
+                last_heading_refresh = now
+
             occ_rgb = cv2.cvtColor(occ, cv2.COLOR_GRAY2BGR)
             draw_backward_fan_reference(
                 occ_rgb,
                 sensor_rc,
-                robot_yaw_deg=0.0,  # Local frame: robot always faces forward (+Y)
+                robot_yaw_deg=robot_heading_deg,
                 x_res=x_res,
                 y_res=y_res,
                 radius_m=cfg.BACKWARD_FAN_RADIUS_M,

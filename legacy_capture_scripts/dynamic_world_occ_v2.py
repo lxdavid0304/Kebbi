@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import math
 import time
-from typing import Any, Dict, List, Optional, Tuple
-from threading import Thread, Lock
+from typing import Any, Dict, List, Optional
+from threading import Thread
 
 import _bootstrap  # noqa: F401
 import cv2
@@ -59,82 +59,17 @@ CAM_PITCH_DEG = -20.0
 # Voice command handling
 VOICE_EVENT_STALE_SEC = 3.0  # drop stale events to keep responses snappy
 
-# Simple straight-line avoidance parameters (mirrors dynamic_world_occ_v2)
-FORWARD_LINE_LENGTH_M = 2.5
-FORWARD_LINE_STEP_M = 0.01  # finer sampling avoids missing close obstacles
-AVOID_SCAN_OFFSET_DEG = 45.0
-AVOID_TURN_STEP_DEG = 30.0
-AVOID_CMD_INTERVAL_SEC = 0.3
+# Simple straight-line avoidance parameters
+FORWARD_LINE_LENGTH_M = 1.5
+FORWARD_LINE_STEP_M = CELL_M
+AVOID_SCAN_OFFSET_DEG = 20.0
+AVOID_TURN_STEP_DEG = 20.0
+AVOID_CMD_INTERVAL_SEC = 1.5
 ENABLE_SIMPLE_AVOIDANCE = True
-PATH_TARGET_X = cfg.ROBOT_START[0]
-LATERAL_PENALTY_GAIN = 0.15  # steer back to center when space is clear
-# Recovery after avoidance: try to return to the original heading when clear
-AVOID_RECOVERY_TOL_DEG = 5.0
-AVOID_RECOVERY_TURN_SCALE = 0.5
-AVOID_RECOVERY_CMD_INTERVAL_SEC = 0.3
-
-# Auto-drive controller
-AUTO_DRIVE_ENABLED = True
-AUTO_MOVE_CMD = "move:0.2"
-AUTO_STOP_CMD = "stop"
-AUTO_CMD_INTERVAL_SEC = 1.0
-AUTO_BOUNDARY_MARGIN_M = 0.0
-AUTO_HEADING_TARGET_DEG = cfg.ROBOT_INIT_YAW_DEG
-AUTO_HEADING_TOLERANCE_DEG = 5.0
-AUTO_HEADING_TURN_SCALE = 0.5  # smaller than 1 so turns don't overshoot
 
 _last_voice_command: Optional[str] = None  # track to avoid repeating the same advice
 _last_line_turn_dir = 1
 _last_avoid_cmd_ts = 0.0
-_last_auto_move_cmd_ts = 0.0
-_auto_motion_state = "stop"  # "stop" or "move"
-_auto_drive_lock = Lock()
-_avoidance_recovery_heading: Optional[float] = None
-_last_recovery_cmd_ts = 0.0
-_blind_follow_guard_active = False
-
-
-def _is_auto_drive_enabled() -> bool:
-    with _auto_drive_lock:
-        return AUTO_DRIVE_ENABLED
-
-
-def get_auto_drive_status() -> Dict[str, Any]:
-    with _auto_drive_lock:
-        return {
-            "enabled": AUTO_DRIVE_ENABLED,
-            "motion_state": _auto_motion_state,
-        }
-
-
-def set_auto_drive_enabled(
-    enabled: bool,
-    tcp: Optional[RobotTCPClient] = None,
-    reason: str = "[auto-web]",
-) -> Dict[str, Any]:
-    global AUTO_DRIVE_ENABLED, _auto_motion_state, _last_auto_move_cmd_ts
-
-    send_stop = False
-    state_changed = False
-    with _auto_drive_lock:
-        if AUTO_DRIVE_ENABLED != enabled:
-            AUTO_DRIVE_ENABLED = enabled
-            state_changed = True
-            if not enabled:
-                _auto_motion_state = "stop"
-                _last_auto_move_cmd_ts = 0.0
-                send_stop = True
-    if state_changed:
-        print(f"[auto] 手動{'啟用' if enabled else '停用'}自動導航")
-    if send_stop and tcp and tcp.connected():
-        _send_tcp_command(tcp, AUTO_STOP_CMD, reason)
-    return get_auto_drive_status()
-
-
-def _normalize_angle_deg(angle: float) -> float:
-    """Wrap an angle in degrees to [-180, 180)."""
-    wrapped = (angle + 180.0) % 360.0 - 180.0
-    return wrapped if wrapped != -180.0 else 180.0
 
 
 def _crop_roi(pcd: o3d.geometry.PointCloud) -> o3d.geometry.PointCloud:
@@ -174,41 +109,36 @@ def _pcd_to_occ(pcd: o3d.geometry.PointCloud) -> np.ndarray:
 def _integrate_roi_into_world(occ_roi: np.ndarray, pose_xy_theta, world_img: np.ndarray) -> None:
     """Place ROI occ into world_img using pose (x,y,yaw)."""
     x, y, yaw_deg = pose_xy_theta
-    print("x,y,yaw_deg:", x, y, yaw_deg)
+    print("x,y,yaw_deg:",x,y,yaw_deg)
     yaw_rad = math.radians(yaw_deg)
-
+    
     # ROI 中心在機器人坐標系中的位置 (0, 1.5)
     # 因為 ROI_Y = (0.0, 3.0)，中心在 Y=1.5
     roi_center_local_x = 0.0
     roi_center_local_y = (ROI_Y[0] + ROI_Y[1]) / 2.0  # 1.5m
-
+    
     # 將 ROI 中心旋轉到世界坐標系
     cos_yaw = math.cos(yaw_rad)
     sin_yaw = math.sin(yaw_rad)
     roi_center_world_x = x + roi_center_local_x * cos_yaw - roi_center_local_y * sin_yaw
     roi_center_world_y = y + roi_center_local_x * sin_yaw + roi_center_local_y * cos_yaw
-    print("[dbg]roi_center_world_x, roi_center_world_y:", roi_center_world_x, roi_center_world_y)
+    print("[dbg]roi_center_world_x, roi_center_world_y:",roi_center_world_x,roi_center_world_y)
     # rotate ROI
     # 關鍵：OpenCV 圖像座標系 Y 軸向下，世界座標系 Y 軸向上
     # 因此旋轉角度需要取負值才能正確對齊
     # 使用 borderValue=255 避免旋轉後的黑色邊角被當作障礙物
     print("[dbg] yaw_deg:", yaw_deg)
     M = cv2.getRotationMatrix2D((occ_roi.shape[1] / 2, occ_roi.shape[0] / 2), yaw_deg, 1.0)
-    rotated = cv2.warpAffine(
-        occ_roi,
-        M,
-        (occ_roi.shape[1], occ_roi.shape[0]),
-        flags=cv2.INTER_NEAREST,
-        borderValue=255,
-    )
-
+    rotated = cv2.warpAffine(occ_roi, M, (occ_roi.shape[1], occ_roi.shape[0]),
+                            flags=cv2.INTER_NEAREST, borderValue=255)
+    
     # center in world
     cx = (roi_center_world_x - WORLD_X[0]) / CELL_M
     cy = (WORLD_Y[1] - roi_center_world_y) / CELL_M
-    print("[dbg] cx, cy:", cx, cy)
+    print("[dbg] cx, cy:",cx,cy)
     offset_col = int(round(cx - occ_roi.shape[1] / 2))
     offset_row = int(round(cy - occ_roi.shape[0] / 2))
-    print("[dbg] offset_row, offset_col:", offset_row, offset_col)
+    print("[dbg] offset_row, offset_col:",offset_row,offset_col)
     for r in range(rotated.shape[0]):
         rr = r + offset_row
         if rr < 0 or rr >= GRID_H:
@@ -271,21 +201,14 @@ def _draw_blind_person(
 
     # 世界座標系：robot_yaw_deg (0°=右/+X, 90°=前/+Y)
     # 後方基準方向 = robot_yaw - 180°
-    base_dir_rad = math.radians(robot_yaw_deg - 180.0)
-    # ToF current_angle 已是「左正右負」，直接疊加到後方基準
-    phi_rad = base_dir_rad + math.radians(angle_deg)
+    robot_yaw_rad = math.radians(robot_yaw_deg)
+    base_dir_rad = robot_yaw_rad - math.pi
+    # 盲人相對角度（從後方基準往左為正）
+    phi_rad = base_dir_rad - math.radians(angle_deg) + math.pi / 2
 
     # 計算盲人在世界座標系中的位置
     human_x = robot_x + distance_m * math.cos(phi_rad)
     human_y = robot_y + distance_m * math.sin(phi_rad)
-
-    # 以機器人為中心將位置逆時針旋轉 90 度
-    rel_x = human_x - robot_x
-    rel_y = human_y - robot_y
-    rot_x = -rel_y
-    rot_y = rel_x
-    human_x = robot_x + rot_x
-    human_y = robot_y + rot_y
 
     # 轉換為圖像座標
     col = int(round((human_x - WORLD_X[0]) / CELL_M))
@@ -354,7 +277,6 @@ def _plan_straight_line_avoidance(
     forward = _sample_occupancy_line(world_img, pose_xy_theta, pose_xy_theta[2])
     info["forward"] = forward
     if not forward["blocked"]:
-        _last_line_turn_dir = 0
         info["blocked"] = False
         info["turn_dir"] = 0
         info["turn_deg"] = None
@@ -372,12 +294,6 @@ def _plan_straight_line_avoidance(
 
     left_score = _score(left)
     right_score = _score(right)
-
-    # Encourage the robot to drift back toward the nominal lane center when space is free
-    lateral_error = pose_xy_theta[0] - PATH_TARGET_X
-    lateral_bias = lateral_error * LATERAL_PENALTY_GAIN
-    left_score += lateral_bias
-    right_score -= lateral_bias
 
     direction = 0
     if left_score > right_score:
@@ -403,10 +319,9 @@ def _plan_straight_line_avoidance(
 def _maybe_send_avoidance_command(
     tcp: Optional[RobotTCPClient],
     avoidance_info: Dict[str, Any],
-    pose_xy_theta: Tuple[float, float, float],
 ) -> None:
     """Send a small turn command if the forward line is blocked."""
-    global _last_avoid_cmd_ts, _avoidance_recovery_heading, _auto_motion_state
+    global _last_avoid_cmd_ts
 
     if (
         not ENABLE_SIMPLE_AVOIDANCE
@@ -425,176 +340,12 @@ def _maybe_send_avoidance_command(
         return
 
     try:
-        # Stop first so the robot pauses and can rethink before issuing a new turn.
-        _send_tcp_command(tcp, AUTO_STOP_CMD, "[avoid]")
-        _auto_motion_state = "stop"
         cmd_value = int(round(turn_deg))
         tcp.send_line(f"turn:{cmd_value}")
         _last_avoid_cmd_ts = now
-        # 記住偏轉前的目標航向，之後視線清晰時再回到這個角度
-        if _avoidance_recovery_heading is None:
-            _avoidance_recovery_heading = pose_xy_theta[2]
         print(f"[avoid] forward blocked, send turn:{cmd_value}")
     except Exception as exc:
         print(f"[avoid] failed to send command: {exc}")
-
-
-def _maybe_recover_heading(
-    tcp: Optional[RobotTCPClient],
-    world_img: np.ndarray,
-    pose_xy_theta: Tuple[float, float, float],
-) -> None:
-    """
-    When the path in the original heading is clear, nudge the robot back so it
-    does not keep drifting along the detour heading.
-    """
-    global _avoidance_recovery_heading, _last_recovery_cmd_ts, _auto_motion_state
-
-    if (
-        not ENABLE_SIMPLE_AVOIDANCE
-        or _avoidance_recovery_heading is None
-        or not tcp
-        or not tcp.connected()
-    ):
-        return
-
-    # Only try to recover when the stored heading is clear again
-    recover_line = _sample_occupancy_line(world_img, pose_xy_theta, _avoidance_recovery_heading)
-    if recover_line.get("blocked"):
-        return
-
-    heading_error = _normalize_angle_deg(_avoidance_recovery_heading - pose_xy_theta[2])
-    if abs(heading_error) <= AVOID_RECOVERY_TOL_DEG:
-        _avoidance_recovery_heading = None
-        return
-
-    now = time.time()
-    if now - _last_recovery_cmd_ts < AVOID_RECOVERY_CMD_INTERVAL_SEC:
-        return
-
-    turn_value = int(round(heading_error * AVOID_RECOVERY_TURN_SCALE))
-    if turn_value == 0:
-        turn_value = 1 if heading_error > 0 else -1
-
-    try:
-        if _auto_motion_state != "stop":
-            _send_tcp_command(tcp, AUTO_STOP_CMD, "[avoid]")
-            _auto_motion_state = "stop"
-        tcp.send_line(f"turn:{turn_value}")
-        _last_recovery_cmd_ts = now
-        print(f"[avoid] 路徑恢復 turn:{turn_value} (→ { _avoidance_recovery_heading:.1f}°)")
-    except Exception as exc:
-        print(f"[avoid] 路徑恢復命令失敗：{exc}")
-
-
-def _has_pending_recovery() -> bool:
-    return _avoidance_recovery_heading is not None
-
-
-def _inside_world_bounds(pose_xy_theta: Tuple[float, float, float], margin_m: float = 0.0) -> bool:
-    x, y, _ = pose_xy_theta
-    return (
-        (WORLD_X[0] + margin_m) <= x <= (WORLD_X[1] - margin_m)
-        and (WORLD_Y[0] + margin_m) <= y <= (WORLD_Y[1] - margin_m)
-    )
-
-
-def _send_tcp_command(tcp: Optional[RobotTCPClient], command: str, label: str) -> bool:
-    if not tcp:
-        return False
-    try:
-        tcp.send_line(command)
-        print(f"{label} 發送 {command}")
-        return True
-    except Exception as exc:
-        print(f"{label} 發送 {command} 失敗：{exc}")
-        return False
-
-
-def _update_blind_follow_guard(
-    tcp: Optional[RobotTCPClient],
-    detection_status: Optional[str],
-) -> bool:
-    """Stop motion while the blind follower is too far away."""
-
-    global _blind_follow_guard_active, _auto_motion_state
-
-    normalized = (detection_status or "").strip().upper()
-    active = normalized == "TOO_FAR"
-    if active and not _blind_follow_guard_active:
-        print("[blind] 偵測距離過遠，停止機器人等待盲人靠近")
-        _auto_motion_state = "stop"
-        _send_tcp_command(tcp, AUTO_STOP_CMD, "[blind]")
-    elif not active and _blind_follow_guard_active:
-        print("[blind] 盲人距離恢復，允許繼續移動")
-    _blind_follow_guard_active = active
-    return _blind_follow_guard_active
-
-
-def _is_blind_guard_active() -> bool:
-    return _blind_follow_guard_active
-
-
-def _auto_drive_step(
-    tcp: Optional[RobotTCPClient],
-    pose_xy_theta: Tuple[float, float, float],
-    avoidance_info: Dict[str, Any],
-    blind_guard_active: bool,
-) -> Tuple[bool, Tuple[str, Tuple[int, int, int]]]:
-    global _auto_motion_state, _last_auto_move_cmd_ts
-
-    status_entry = ("auto: disabled", (128, 128, 128))
-    if not _is_auto_drive_enabled():
-        return True, status_entry
-    if not tcp or not tcp.connected():
-        _auto_motion_state = "stop"
-        return True, ("auto: wait tcp", (128, 128, 128))
-    if not tcp.has_odometry_data():
-        if _auto_motion_state != "stop":
-            _send_tcp_command(tcp, AUTO_STOP_CMD, "[auto]")
-            _auto_motion_state = "stop"
-        return True, ("auto: wait odom", (128, 128, 128))
-
-    if blind_guard_active:
-        if _auto_motion_state != "stop":
-            _send_tcp_command(tcp, AUTO_STOP_CMD, "[auto]")
-        _auto_motion_state = "stop"
-        return True, ("auto: wait blind", (0, 165, 255))
-
-    inside = _inside_world_bounds(pose_xy_theta, AUTO_BOUNDARY_MARGIN_M)
-    if not inside:
-        if _auto_motion_state != "stop":
-            _send_tcp_command(tcp, AUTO_STOP_CMD, "[auto]")
-            _auto_motion_state = "stop"
-        return False, ("auto: boundary stop", (0, 0, 255))
-
-    if avoidance_info.get("blocked"):
-        if _auto_motion_state != "stop":
-            _send_tcp_command(tcp, AUTO_STOP_CMD, "[auto]")
-            _auto_motion_state = "stop"
-        return True, ("auto: blocked", (0, 165, 255))
-
-    if ENABLE_SIMPLE_AVOIDANCE and _has_pending_recovery():
-        if _auto_motion_state != "stop":
-            _send_tcp_command(tcp, AUTO_STOP_CMD, "[auto]")
-            _auto_motion_state = "stop"
-        return True, ("auto: recovery", (0, 165, 255))
-
-    heading_error = _normalize_angle_deg(AUTO_HEADING_TARGET_DEG - pose_xy_theta[2])
-    if abs(heading_error) > AUTO_HEADING_TOLERANCE_DEG:
-        turn_value = int(round(heading_error * AUTO_HEADING_TURN_SCALE))
-        if turn_value != 0:
-            _send_tcp_command(tcp, f"turn:{turn_value}", "[auto]")
-            _auto_motion_state = "stop"
-            return True, ("auto: heading adjust", (0, 165, 255))
-
-    now = time.time()
-    if _auto_motion_state != "move" or (now - _last_auto_move_cmd_ts) >= AUTO_CMD_INTERVAL_SEC:
-        if _send_tcp_command(tcp, AUTO_MOVE_CMD, "[auto]"):
-            _auto_motion_state = "move"
-            _last_auto_move_cmd_ts = now
-    return True, ("auto: moving", (0, 255, 0))
-
 
 def _select_detection_entry(snapshot: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     meta = snapshot.get("meta") or {}
@@ -691,11 +442,6 @@ def main():
     
     # 啟動 Flask web server 在背景線程
     app = create_app()
-    app.auto_drive_controls = {
-        "get_status": get_auto_drive_status,
-        "set_enabled": lambda enabled: set_auto_drive_enabled(enabled, app.tcp_client),
-    }
-    app.is_blind_guard_active = _is_blind_guard_active
     flask_thread = Thread(target=lambda: app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False))
     flask_thread.daemon = True
     flask_thread.start()
@@ -731,15 +477,6 @@ def main():
             detection_entry = _select_detection_entry(snapshot)
             voice_events = snapshot.get("voice_events", [])
             meta = snapshot.get("meta", {})
-
-            det_status_value: Optional[str] = None
-            if detection_entry and detection_entry.get("status"):
-                det_status_value = str(detection_entry.get("status"))
-            elif isinstance(meta, dict) and meta.get("last_detection_status"):
-                det_status_value = str(meta.get("last_detection_status"))
-            if not det_status_value:
-                det_status_value = "unknown"
-            blind_guard_active = _update_blind_follow_guard(tcp, det_status_value)
 
             if voice_events:
                 _deliver_voice_events(tcp, voice_events)
@@ -796,12 +533,13 @@ def main():
                 od_pose = tcp.get_pose()
                 print(f"[odom] pose: x={od_pose.x_m:.2f} y={od_pose.y_m:.2f} heading={od_pose.heading_deg:.1f}")
                 # 里程計座標系轉換到世界座標系：
-                # 里程計：前進=+X, 右=+Y, heading=0為+X方向
+                # POSM 目前回報的前進方向在 X 軸上為負值，因此這裡額外取負號，讓世界 +Y 仍代表實際前進。
+                # 里程計：前進=+X(實際回報為負), 右=+Y, heading=0為+X方向
                 # 世界：前進=+Y, 右=+X, heading=0為+X方向, heading=90為+Y方向
-                # 轉換：world_x = odom_y, world_y = -odom_x, world_heading = 90 - odom_heading
+                # 轉換：world_x = odom_y, world_y = -odom_x, world_heading = odom_heading + 90
                 world_x = od_pose.y_m
                 world_y = -od_pose.x_m
-                world_yaw = _normalize_angle_deg(90.0 - od_pose.heading_deg)
+                world_yaw = od_pose.heading_deg + 90.0
                 pose = (world_x, world_y, world_yaw)
             else:
                 print(f"[odom] no data yet, using default pose: {pose[0]:.2f}, {pose[1]:.2f}, {pose[2]:.1f}")
@@ -839,21 +577,7 @@ def main():
                     (avoidance_info.get("right") or {}).get("points") or [],
                     (255, 165, 0),
                 )
-            _maybe_send_avoidance_command(tcp, avoidance_info, pose)
-            if not avoidance_info.get("blocked"):
-                _maybe_recover_heading(tcp, world, pose)
-
-            auto_status_entry = ("auto: disabled", (128, 128, 128))
-            if _is_auto_drive_enabled():
-                keep_running, auto_status_entry = _auto_drive_step(
-                    tcp,
-                    pose,
-                    avoidance_info,
-                    blind_guard_active,
-                )
-                if not keep_running:
-                    print("[auto] 抵達世界邊界，停止自動移動")
-                    break
+            _maybe_send_avoidance_command(tcp, avoidance_info)
 
             # 扇形區域需要使用相反的旋轉方向以正確跟隨機器人後方
             draw_backward_fan_reference(
@@ -879,10 +603,9 @@ def main():
                     -1,
                 )
 
+
             _draw_grid(world_rgb)
-            # Rotate entire world map 90° clockwise for display
-            world_rgb_display = cv2.rotate(world_rgb, cv2.ROTATE_90_CLOCKWISE)
-            display_local = cv2.resize(world_rgb_display, (GRID_W * 8, GRID_H * 8), interpolation=cv2.INTER_NEAREST)
+            display_local = cv2.resize(world_rgb, (GRID_W * 8, GRID_H * 8), interpolation=cv2.INTER_NEAREST)
             
             status_text = []
 
@@ -908,13 +631,11 @@ def main():
 
             status_text.append((f"position: ({pose[0]:.2f}, {pose[1]:.2f}) angle: {pose[2]:.0f}°", (100, 100, 100)))
 
-            det_status = det_status_value or "unknown"
+            det_status = meta.get("last_detection_status", "unknown") if isinstance(meta, dict) else "unknown"
+            if detection_entry and detection_entry.get("status"):
+                det_status = detection_entry.get("status")
             det_color = (0, 255, 0) if det_status in ("NORMAL", "none") else (0, 0, 255)
             status_text.append((f"detection: {det_status}", det_color))
-            if blind_guard_active:
-                status_text.append(("blind: waiting (too far)", (0, 0, 255)))
-            else:
-                status_text.append(("blind: in range", (0, 255, 0)))
             if avoidance_info.get("blocked"):
                 dir_label = "left" if avoidance_info.get("turn_dir", 1) >= 0 else "right"
                 status_text.append((f"avoid: turn {dir_label}", (0, 0, 255)))
@@ -922,7 +643,6 @@ def main():
                 status_text.append(("avoid: clear", (0, 255, 0)))
             voice_color = (0, 255, 0) if not voice_events else (0, 165, 255)
             status_text.append((f"voice queue: {len(voice_events)}", voice_color))
-            status_text.append(auto_status_entry)
             
             # 在畫面左上角顯示狀態
             y_offset = 20
@@ -946,22 +666,19 @@ def main():
             if key == ord("q") or key == 27:
                 break
             if tcp and tcp.connected() and key in (ord("w"), ord("s"), ord("a"), ord("d"), ord("x"), ord("c")):
-                if _is_blind_guard_active() and key != ord("x"):
-                    print("[cmd] ⚠️  盲人距離過遠，暫停手動移動指令")
-                    continue
                 try:
                     if key == ord("w"):
-                        tcp.send_line("move:0.1")
-                        print("[cmd] 發送: forward (move:0.1)")
+                        tcp.send_line("move:0.5")
+                        print("[cmd] 發送: forward")
                     elif key == ord("s"):
-                        tcp.send_line("move:-0.1")
-                        print("[cmd] 發送: backward (move:-0.1)")
+                        tcp.send_line("move:-0.5")
+                        print("[cmd] 發送: backward")
                     elif key == ord("a"):
-                        tcp.send_line("turn:30")
-                        print("[cmd] 發送: turn:30")
+                        tcp.send_line("turn:45")
+                        print("[cmd] 發送: turn:45")
                     elif key == ord("d"):
-                        tcp.send_line("turn:-30")
-                        print("[cmd] 發送: turn:-30")
+                        tcp.send_line("turn:-45")
+                        print("[cmd] 發送: turn:-45")
                     elif key == ord("x"):
                         tcp.send_line("stop")
                         print("[cmd] 發送: stop")
